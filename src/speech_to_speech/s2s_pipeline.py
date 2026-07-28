@@ -207,6 +207,8 @@ def parse_arguments() -> ParsedArguments:
             threshold=by_type[ModuleArguments].wake_word_threshold,
             activation_timeout_s=by_type[ModuleArguments].wake_word_activation_timeout_s,
             preroll_ms=by_type[ModuleArguments].wake_word_preroll_ms,
+            wake_chime=by_type[ModuleArguments].wake_word_wake_chime,
+            search_chime=by_type[ModuleArguments].wake_word_search_chime,
         ),
     )
 
@@ -394,20 +396,47 @@ def _build_pipeline_handlers(
     """
     from speech_to_speech.LLM.lm_output_processor import LMOutputProcessor
 
+    # ── ChimeLoader (optional WAV chimes for wake word and search) ─────
+    wake_word_chime: bytes | None = None
+    search_chime: bytes | None = None
+    if wake_word_handler_kwargs is not None:
+        ww_path = wake_word_handler_kwargs.wake_chime
+        sc_path = wake_word_handler_kwargs.search_chime
+        if ww_path or sc_path:
+            from speech_to_speech.chime_loader import ChimeLoader
+
+            chime_loader = ChimeLoader(wake_chime_path=ww_path, search_chime_path=sc_path)
+            wake_word_chime = chime_loader.wake_chime
+            search_chime = chime_loader.search_chime
+
+    # ── WakeWordHandler ────────────────────────────────────────────────
     if wake_word_handler_kwargs is not None and wake_word_handler_kwargs.model_path is not None:
         from speech_to_speech.WakeWord.wake_word_handler import WakeWordHandler
 
         ww_out_queue: Queue = Queue()
+        ww_setup = {k: v for k, v in vars(wake_word_handler_kwargs).items()
+                     if k not in ("wake_chime", "search_chime")}
+        if wake_word_chime is not None:
+            ww_setup["wake_chime_bytes"] = wake_word_chime
+            ww_setup["chime_output_queue"] = send_audio_chunks_queue
+        ww_setup["should_listen"] = should_listen
         wake_word = WakeWordHandler(
             stop_event,
             queue_in=recv_audio_chunks_queue,
             queue_out=ww_out_queue,
-            setup_kwargs=vars(wake_word_handler_kwargs),
+            setup_kwargs=ww_setup,
         )
         vad_in_queue: Queue = ww_out_queue
     else:
         wake_word = None
         vad_in_queue = recv_audio_chunks_queue
+
+    # ── Inject search chime into LM handler kwargs ─────────────────────
+    if search_chime is not None:
+        vars(responses_api_language_model_handler_kwargs)["chime_output_queue"] = send_audio_chunks_queue
+        vars(responses_api_language_model_handler_kwargs)["search_chime_bytes"] = search_chime
+        vars(language_model_handler_kwargs)["chime_output_queue"] = send_audio_chunks_queue
+        vars(language_model_handler_kwargs)["search_chime_bytes"] = search_chime
 
     vad = VADHandler(
         stop_event,

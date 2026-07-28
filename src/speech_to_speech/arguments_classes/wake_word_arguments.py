@@ -27,3 +27,15 @@ class WakeWordHandlerArguments:
             "help": "Milliseconds of audio to retain before the detected wake word and forward on activation."
         },
     )
+    wake_chime: str | None = field(
+        default=None,
+        metadata={
+            "help": "Path to WAV file to play when wake word is detected (signals user can speak)."
+        },
+    )
+    search_chime: str | None = field(
+        default=None,
+        metadata={
+            "help": "Path to WAV file to play after a server-side tool/search returns (signals answer incoming)."
+        },
+    )

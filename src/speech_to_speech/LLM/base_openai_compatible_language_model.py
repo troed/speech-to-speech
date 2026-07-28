@@ -4,6 +4,7 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
+from queue import Queue
 from typing import Any, Optional
 
 import httpx
@@ -160,6 +161,8 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self._extra_body = self._build_extra_body(base_url, disable_thinking, reasoning_effort)
         self.compactor = build_compactor(self._build_compaction_generate_fn()) if compact_history else None
+        self._search_chime_bytes: bytes | None = _kwargs.pop("search_chime_bytes", None)
+        self._chime_output_queue: Queue | None = _kwargs.pop("chime_output_queue", None)
         self.warmup()
 
     @staticmethod
@@ -289,6 +292,13 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             speech_stopped_at_s=turn.speech_stopped_at_s,
             cancel_generation=turn.gen,
         )
+
+    def _play_search_chime(self) -> None:
+        if self._search_chime_bytes is not None and self._chime_output_queue is not None:
+            try:
+                self._chime_output_queue.put_nowait(self._search_chime_bytes)
+            except Exception:
+                pass
 
     def _record_tool_call(self, state: _GenState, turn: _Turn, item: ResponseFunctionToolCall) -> Iterator[LLMOut]:
         """Emit a tool call, persisting it (and any assistant text seen so far)
@@ -543,6 +553,8 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                     type="function_call_output",
                 )
                 original_chat.append_tool_output(tool.call_id, tool_output)
+
+                self._play_search_chime()
 
             if is_out_of_band(turn.response):
                 try:

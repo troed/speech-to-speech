@@ -11,11 +11,13 @@
 </div>
 
 > [!IMPORTANT]
-> This is a **fork** of [huggingface/speech-to-speech](https://github.com/huggingface/speech-to-speech) with server-side web search support.
+> This is a **fork** of [huggingface/speech-to-speech](https://github.com/huggingface/speech-to-speech) with three additions.
 >
-> **What's new:** The LLM can now search the web during a conversation. When it decides it needs current information, it calls a `web_search` tool that routes through a local [tinysearch](https://github.com/anomalyco/opencode/tree/main/mcp/tinysearch) MCP server — SearXNG backed, no API keys required. The tool call is handled entirely server-side: the result is injected back into the conversation context and the LLM continues naturally. Client-facing tool forwarding is suppressed, so WebSocket/Realtime clients see only the final text response.
+> **1. Server-side web search.** The LLM can search the web during a conversation. When it decides it needs current information, it calls a `web_search` tool that routes through a local [tinysearch](https://github.com/anomalyco/opencode/tree/main/mcp/tinysearch) MCP server — SearXNG backed, no API keys required. The tool call is handled entirely server-side: the result is injected back into the conversation context and the LLM continues naturally. Client-facing tool forwarding is suppressed, so WebSocket/Realtime clients see only the final text response. Run the tinysearch server on `localhost:8765` before starting — the `web_search` tool is injected automatically.
 >
-> Usage: run the tinysearch MCP server on `localhost:8765` before starting speech-to-speech. No code changes needed — the `web_search` tool is injected automatically.
+> **2. Wake word detection.** The system can be put to sleep and only respond after hearing a configured wake word (e.g. "computer"). Uses [openWakeWord](https://github.com/dscripka/openWakeWord) — train a custom ONNX model at [openwakeword.com/train](https://openwakeword.com/train). When no wake word model is configured, the system behaves as before (always-listening).
+>
+> **3. Audio chimes.** Optionally play WAV chimes on wake word detection (signals the user can speak) and when a server-side tool/search returns (signals the answer is incoming). Passed via `--wake_word_wake_chime` and `--wake_word_search_chime`.
 
 A low-latency, fully modular voice-agent pipeline: **VAD -> STT -> LLM -> TTS**, exposed through an **OpenAI Realtime-compatible WebSocket API**. Every component is swappable. The LLM slot speaks OpenAI-compatible protocols, so you can point it at a hosted provider, at [HF Inference Providers](https://huggingface.co/inference-providers), or at a vLLM or llama.cpp server on your own hardware for a fully local, fully open stack.
 

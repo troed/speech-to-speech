@@ -103,3 +103,15 @@ class ModuleArguments:
             "help": "Milliseconds of audio to retain before the detected wake word and forward on activation. Default is 1000."
         },
     )
+    wake_word_wake_chime: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Path to WAV file to play when wake word is detected (signals user can speak)."
+        },
+    )
+    wake_word_search_chime: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Path to WAV file to play after a server-side tool/search returns (signals answer incoming)."
+        },
+    )
