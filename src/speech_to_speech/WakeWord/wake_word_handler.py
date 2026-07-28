@@ -84,9 +84,6 @@ class WakeWordHandler(BaseHandler[VADIn, VADIn]):
                     self._state = "active"
                     self._last_forward_time = now
                     self._play_wake_chime()
-                    for b in self._buffer:
-                        yield (b, rt_cfg) if rt_cfg else b
-                    yield item
                     self._buffer.clear()
                     logger.info("WakeWordHandler: wake word detected, activating")
                     return

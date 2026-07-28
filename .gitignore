@@ -228,4 +228,9 @@ dmypy.json
 .coverage
 cover/
 .tox/
-uv.lock
+uv.lock*.opus
+*.wav
+*.tflite
+*.onnx
+run.sh
+swerun.sh

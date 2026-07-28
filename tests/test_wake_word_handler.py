@@ -129,7 +129,7 @@ def test_wake_handler_plays_chime_on_detection():
 
     chunk = b"\x00" * 1024
     results = list(handler.process(chunk))
-    assert len(results) == 1  # empty buffer + live chunk
+    assert len(results) == 0  # no buffer or wakeword forwarded
     assert chime_queue.qsize() == 1
     assert chime_queue.get_nowait() == CHIME_TEST_BYTES
 
@@ -150,7 +150,7 @@ def test_wake_handler_no_chime_when_not_configured():
 
     chunk = b"\x00" * 1024
     results = list(handler.process(chunk))
-    assert len(results) == 1
+    assert len(results) == 0
 
 
 def test_wake_handler_chime_with_buffered_audio():
@@ -170,5 +170,5 @@ def test_wake_handler_chime_with_buffered_audio():
 
     chunk = b"\x00" * 1024
     results = list(handler.process(chunk))
-    assert len(results) == 3  # 2 buffered + 1 live
+    assert len(results) == 0  # nothing forwarded on wake
     assert chime_queue.qsize() == 1
