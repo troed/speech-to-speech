@@ -29,6 +29,12 @@ from speech_to_speech.api.openai_realtime.runtime_config import RuntimeConfig
 
 # ── VAD stage ─────────────────────────────────────────────────────────
 VADIn: TypeAlias = bytes | tuple[bytes, RuntimeConfig]
+
+# ── WakeWord stage ────────────────────────────────────────────────
+# WakeWordHandler consumes VADIn (bytes | tuple[bytes, RuntimeConfig])
+# and produces the same type — it's a gate, not a transformer.
+WakeWordIn: TypeAlias = bytes | tuple[bytes, RuntimeConfig]
+
 VADOut: TypeAlias = VADAudio
 
 # ── STT stage ─────────────────────────────────────────────────────────

@@ -24,6 +24,9 @@ PipelineInternalItem: TypeAlias = PipelineControlMessage | bytes
 # Audio chunks coming from IO (socket/websocket/mic) into VAD.
 AudioInItem: TypeAlias = VADIn | PipelineControlMessage
 
+# Audio flowing from WakeWordHandler into VAD.
+WakeWordOutItem: TypeAlias = VADIn | PipelineControlMessage
+
 # Audio segments flowing from VAD to STT.
 VADOutItem: TypeAlias = VADOut | PipelineInternalItem
 
