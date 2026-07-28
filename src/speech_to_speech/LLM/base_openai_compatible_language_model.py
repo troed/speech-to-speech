@@ -531,6 +531,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("Failed to parse arguments for tool %s: %s", tool.name, tool.arguments)
                     continue
+                yield self._chunk(turn, text="Searching")
                 from openai.types.realtime.conversation_item import RealtimeConversationItemFunctionCallOutput
                 from speech_to_speech.utils.utils import _generate_id
 
