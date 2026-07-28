@@ -37,6 +37,8 @@ class LMOutputProcessor(BaseHandler[LLMOut, TTSIn]):
         self,
         text_output_queue: Queue[TextEventItem] | None = None,
         speculative_turns: SpeculativeTurnTracker | None = None,
+        search_chime_bytes: bytes | None = None,
+        chime_output_queue: Queue | None = None,
     ) -> None:
         """
         Initialize the processor.
@@ -46,6 +48,9 @@ class LMOutputProcessor(BaseHandler[LLMOut, TTSIn]):
         """
         self.text_output_queue = text_output_queue
         self.speculative_turns = speculative_turns
+        self._search_chime_bytes = search_chime_bytes
+        self._chime_output_queue = chime_output_queue
+        self._awaiting_search_result = False
 
     def _turn_output_allowed(self, turn_id: str | None, turn_revision: int | None) -> bool:
         if self.speculative_turns is None:
@@ -90,6 +95,7 @@ class LMOutputProcessor(BaseHandler[LLMOut, TTSIn]):
                     lm_output.turn_revision,
                 )
                 return
+            self._awaiting_search_result = False
             # A failed generation (e.g. invalid out-of-band input) closes the response as
             # "failed" via the text side-channel, then falls through to emit the normal
             # EndOfResponse so the audio path still re-enables listening / releases the slot.
@@ -121,6 +127,28 @@ class LMOutputProcessor(BaseHandler[LLMOut, TTSIn]):
 
         logger.debug(f"LM processor: text='{lm_output.text}', tools={lm_output.tools}")
 
+        if lm_output.text and response_wants_audio(lm_output.response):
+            if self._search_chime_bytes is not None and self._chime_output_queue is not None:
+                if not lm_output.server_tool_executed and self._awaiting_search_result:
+                    try:
+                        self._chime_output_queue.put_nowait(self._search_chime_bytes)
+                    except Exception:
+                        pass
+                    self._awaiting_search_result = False
+            yield TTSInput(
+                text=lm_output.text,
+                language_code=lm_output.language_code,
+                runtime_config=lm_output.runtime_config,
+                response=lm_output.response,
+                turn_id=lm_output.turn_id,
+                turn_revision=lm_output.turn_revision,
+                speech_stopped_at_s=lm_output.speech_stopped_at_s,
+                cancel_generation=lm_output.cancel_generation,
+            )
+
+        if lm_output.server_tool_executed:
+            self._awaiting_search_result = True
+
         if self.text_output_queue is not None:
             event = AssistantTextEvent(
                 text=lm_output.text,
@@ -139,15 +167,4 @@ class LMOutputProcessor(BaseHandler[LLMOut, TTSIn]):
                 logger.debug(f"Sending to clients: text='{lm_output.text}' (no tools)")
             self.text_output_queue.put(event)
 
-        if lm_output.text and response_wants_audio(lm_output.response):
-            logger.debug(f"Forwarding to TTS: '{lm_output.text}'")
-            yield TTSInput(
-                text=lm_output.text,
-                language_code=lm_output.language_code,
-                runtime_config=lm_output.runtime_config,
-                response=lm_output.response,
-                turn_id=lm_output.turn_id,
-                turn_revision=lm_output.turn_revision,
-                speech_stopped_at_s=lm_output.speech_stopped_at_s,
-                cancel_generation=lm_output.cancel_generation,
-            )
+

@@ -86,6 +86,7 @@ class LLMResponseChunk(PipelineMessage):
     turn_revision: int | None = None
     speech_stopped_at_s: float | None = None
     cancel_generation: int | None = None
+    server_tool_executed: bool = False
 
 
 class TokenUsage(PipelineMessage):

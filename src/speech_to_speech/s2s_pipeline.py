@@ -431,12 +431,17 @@ def _build_pipeline_handlers(
         wake_word = None
         vad_in_queue = recv_audio_chunks_queue
 
-    # ── Inject search chime into LM handler kwargs ─────────────────────
+    # ── Inject search chime + instructions into LM handler kwargs ──────
     if search_chime is not None:
         vars(responses_api_language_model_handler_kwargs)["chime_output_queue"] = send_audio_chunks_queue
         vars(responses_api_language_model_handler_kwargs)["search_chime_bytes"] = search_chime
         vars(language_model_handler_kwargs)["chime_output_queue"] = send_audio_chunks_queue
         vars(language_model_handler_kwargs)["search_chime_bytes"] = search_chime
+
+    search_instructions = module_kwargs.search_instructions
+    if search_instructions:
+        vars(responses_api_language_model_handler_kwargs)["search_instructions"] = search_instructions
+        vars(language_model_handler_kwargs)["search_instructions"] = search_instructions
 
     vad = VADHandler(
         stop_event,
@@ -475,11 +480,18 @@ def _build_pipeline_handlers(
         responses_api_language_model_handler_kwargs,
     )
 
+    processor_kwargs: dict[str, Any] = {
+        "text_output_queue": text_output_queue,
+        "speculative_turns": speculative_turns,
+    }
+    if search_chime is not None:
+        processor_kwargs["search_chime_bytes"] = search_chime
+        processor_kwargs["chime_output_queue"] = send_audio_chunks_queue
     lm_processor = LMOutputProcessor(
         stop_event,
         queue_in=lm_response_queue,
         queue_out=lm_processed_queue,
-        setup_kwargs={"text_output_queue": text_output_queue, "speculative_turns": speculative_turns},
+        setup_kwargs=processor_kwargs,
     )
 
     tts = get_tts_handler(

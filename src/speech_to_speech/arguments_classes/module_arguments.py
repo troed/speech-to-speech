@@ -115,3 +115,11 @@ class ModuleArguments:
             "help": "Path to WAV file to play after a server-side tool/search returns (signals answer incoming)."
         },
     )
+    search_instructions: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Instructions for how the LLM should present search results. "
+            "Added to the conversation after tool results. "
+            "Example: 'Present results conversationally without listing URLs or numbered sources.'"
+        },
+    )

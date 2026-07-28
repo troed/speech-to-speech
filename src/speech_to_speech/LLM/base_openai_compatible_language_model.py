@@ -163,6 +163,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         self.compactor = build_compactor(self._build_compaction_generate_fn()) if compact_history else None
         self._search_chime_bytes: bytes | None = _kwargs.pop("search_chime_bytes", None)
         self._chime_output_queue: Queue | None = _kwargs.pop("chime_output_queue", None)
+        self._search_instructions: str | None = _kwargs.pop("search_instructions", None)
         self.warmup()
 
     @staticmethod
@@ -280,6 +281,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         text: str = "",
         tools: list[ResponseFunctionToolCall] | None = None,
         language_code: Optional[str] = None,
+        server_tool_executed: bool = False,
     ) -> LLMResponseChunk:
         return LLMResponseChunk(
             text=text,
@@ -291,6 +293,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             turn_revision=turn.turn_revision,
             speech_stopped_at_s=turn.speech_stopped_at_s,
             cancel_generation=turn.gen,
+            server_tool_executed=server_tool_executed,
         )
 
     def _play_search_chime(self) -> None:
@@ -541,7 +544,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("Failed to parse arguments for tool %s: %s", tool.name, tool.arguments)
                     continue
-                yield self._chunk(turn, text="Searching")
+                yield self._chunk(turn, text="Searching", server_tool_executed=True)
                 from openai.types.realtime.conversation_item import RealtimeConversationItemFunctionCallOutput
                 from speech_to_speech.utils.utils import _generate_id
 
@@ -554,8 +557,6 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                 )
                 original_chat.append_tool_output(tool.call_id, tool_output)
 
-                self._play_search_chime()
-
             if is_out_of_band(turn.response):
                 try:
                     active_chat = build_active_chat(original_chat, turn.response)
@@ -564,6 +565,12 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                     break
             else:
                 active_chat = original_chat.copy()
+
+            search_instructions = getattr(self, "_search_instructions", None)
+            if search_instructions:
+                from speech_to_speech.LLM.chat import make_user_message
+
+                active_chat.add_item(make_user_message(search_instructions))
 
         if (
             error_message is None
