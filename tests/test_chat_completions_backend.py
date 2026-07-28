@@ -436,7 +436,10 @@ def test_tools_converted_to_chat_format_on_request():
 
     h.client.chat.completions.create = fake_create
     _drive(h, tools=[{"type": "function", "name": "f", "parameters": {"type": "object"}}], tool_choice="auto")
-    assert captured["tools"] == [{"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}}]
+    # Server-side tools are injected automatically
+    tool_names = {t["function"]["name"] for t in captured["tools"]}
+    assert "f" in tool_names
+    assert "web_search" in tool_names
     assert captured["tool_choice"] == "auto"
     assert captured["stream"] is True
     assert captured["stream_options"] == {"include_usage": True}
@@ -521,7 +524,9 @@ def test_tool_choice_sent_without_tools():
 
     h.client.chat.completions.create = fake_create
     _drive(h, tool_choice="none")
-    assert "tools" not in captured
+    # Server-side tools are always injected
+    assert "tools" in captured
+    assert any(t["function"]["name"] == "web_search" for t in captured["tools"])
     assert captured["tool_choice"] == "none"
 
 
@@ -558,6 +563,151 @@ def test_generation_error_emits_failed_end_of_response():
     text, tools, usage, chat, end = _drive(h)
     assert end is not None and end.error is not None
     assert "kaboom" in end.error
+
+
+# ── Server-side tool execution loop ─────────────────────────────────────────────
+
+
+def test_server_side_tool_streaming_executed_and_not_forwarded_to_client():
+    """Server-side tool calls are executed, results fed back to LLM, and only
+    the final response text reaches the client (streaming path)."""
+    from unittest.mock import patch
+
+    h = _make_handler(stream=True)
+
+    first_stream = _FakeStream(
+        [
+            _chunk(tool_calls=[_tc_delta(0, id="srv_1", name="web_search", arguments='{"query": "test"}')]),
+            _chunk(usage=SimpleNamespace(prompt_tokens=10, completion_tokens=2)),
+        ]
+    )
+    second_stream = _FakeStream(
+        [
+            _chunk(content="Based on the search, I found the answer."),
+            _chunk(usage=SimpleNamespace(prompt_tokens=30, completion_tokens=8)),
+        ]
+    )
+
+    responses = iter([first_stream, second_stream])
+    call_info = {"count": 0}
+    orig_create = h.client.chat.completions.create
+
+    def fake_create(**kwargs):
+        call_info["count"] += 1
+        return next(responses)
+
+    h.client.chat.completions.create = fake_create
+    with patch("speech_to_speech.LLM.server_side_tools._call_research", return_value="Search results for test"):
+        text, tools, usage, chat, end = _drive(h)
+
+    h.client.chat.completions.create = orig_create
+    assert "Based on the search" in text
+    assert tools == []
+    assert end is not None and end.error is None
+    assert call_info["count"] == 2
+
+
+def test_server_side_tool_nonstreaming_executed_and_not_forwarded_to_client():
+    """Server-side tool calls are executed, results fed back to LLM (non-streaming path)."""
+    from unittest.mock import patch
+
+    h = _make_handler(stream=False)
+
+    first_response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=None, tool_calls=[
+            SimpleNamespace(
+                id="srv_1",
+                function=SimpleNamespace(name="web_search", arguments='{"query": "test query"}'),
+            )
+        ]))],
+        usage=SimpleNamespace(prompt_tokens=10, completion_tokens=2),
+    )
+    second_response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="Search complete. Here is the result.", tool_calls=[]))],
+        usage=SimpleNamespace(prompt_tokens=25, completion_tokens=5),
+    )
+
+    responses = iter([first_response, second_response])
+    call_info = {"count": 0}
+
+    def fake_create(**kwargs):
+        call_info["count"] += 1
+        return next(responses)
+
+    h.client.chat.completions.create = fake_create
+    with patch("speech_to_speech.LLM.server_side_tools._call_research", return_value="MOCK ANSWER"):
+        text, tools, usage, chat, end = _drive(h)
+
+    assert "Search complete" in text
+    assert tools == []
+    assert end is not None and end.error is None
+    assert call_info["count"] == 2
+
+
+def test_server_side_tool_execution_recorded_in_chat_history():
+    """Tool output is appended to the conversation history after execution."""
+    from unittest.mock import patch
+
+    h = _make_handler(stream=True)
+
+    first_stream = _FakeStream(
+        [
+            _chunk(tool_calls=[_tc_delta(0, id="srv_1", name="web_search", arguments='{"query": "test"}')]),
+            _chunk(usage=SimpleNamespace(prompt_tokens=10, completion_tokens=2)),
+        ]
+    )
+    second_stream = _FakeStream(
+        [
+            _chunk(content="Found it."),
+            _chunk(usage=SimpleNamespace(prompt_tokens=30, completion_tokens=3)),
+        ]
+    )
+
+    responses = iter([first_stream, second_stream])
+
+    def fake_create(**kwargs):
+        return next(responses)
+
+    h.client.chat.completions.create = fake_create
+    chat = Chat(10)
+    chat.add_item(make_user_message("search for test"))
+
+    with patch("speech_to_speech.LLM.server_side_tools._call_research", return_value="Results here"):
+        session = RealtimeSessionCreateRequest(type="realtime", instructions="You are a search assistant.")
+        rc = RuntimeConfig(chat=chat, session=session)
+        req = GenerateResponseRequest(runtime_config=rc, language_code="en", turn_id="t", turn_revision=0)
+        for _ in h.process(req):
+            pass
+
+    # Verify tool output was recorded in chat history
+    tool_outputs = [i for i in chat.buffer if getattr(i, "type", None) == "function_call_output"]
+    assert len(tool_outputs) == 1
+    assert "Results here" in tool_outputs[0].output
+
+
+def test_server_side_tool_limit_reached():
+    """MAX_SERVER_TOOL_ITERATIONS guard terminates the loop when exceeded."""
+    from unittest.mock import patch
+
+    h = _make_handler(stream=True)
+
+    tool_stream = _FakeStream(
+        [
+            _chunk(tool_calls=[_tc_delta(0, id="srv_1", name="web_search", arguments='{"query": "x"}')]),
+            _chunk(usage=SimpleNamespace(prompt_tokens=5, completion_tokens=1)),
+        ]
+    )
+
+    # Always return a tool call — should hit the iteration limit
+    def fake_create(**kwargs):
+        return tool_stream
+
+    h.client.chat.completions.create = fake_create
+    with patch("speech_to_speech.LLM.server_side_tools._call_research", return_value="MOCK"):
+        text, tools, usage, chat, end = _drive(h)
+
+    assert end is not None and end.error is not None
+    assert "iteration limit" in end.error or "Tool execution exceeded" in end.error
 
 
 # ── Out-of-band (conversation="none") responses ───────────────────────────────

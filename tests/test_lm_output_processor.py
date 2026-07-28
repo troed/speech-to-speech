@@ -1,11 +1,24 @@
 from queue import Queue
 from threading import Event, Thread
+from unittest.mock import patch
 
 from openai.types.realtime.realtime_response_create_params import RealtimeResponseCreateParams
+from openai.types.responses import ResponseFunctionToolCall
 
 from speech_to_speech.LLM.lm_output_processor import LMOutputProcessor
 from speech_to_speech.pipeline.messages import EndOfResponse, LLMResponseChunk, TTSInput
 from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
+
+
+def _make_tool(*, name: str, arguments: str, call_id: str = "call_1") -> ResponseFunctionToolCall:
+    return ResponseFunctionToolCall(
+        id="1",
+        call_id=call_id,
+        name=name,
+        arguments=arguments,
+        status="completed",
+        type="function_call",
+    )
 
 
 def _processor(tracker: SpeculativeTurnTracker) -> LMOutputProcessor:
@@ -216,3 +229,71 @@ def test_confirmed_reopen_drops_held_assistant_chunk():
 
     assert outputs == []
     assert processor.text_output_queue.empty()
+
+
+def test_server_side_tools_filtered_from_client_event():
+    tracker = SpeculativeTurnTracker()
+    tracker.observe("turn_1", 0)
+    processor = _processor(tracker)
+
+    with patch("speech_to_speech.LLM.lm_output_processor.is_server_side_tool", return_value=True):
+        chunk = LLMResponseChunk(
+            text="",
+            turn_id="turn_1",
+            turn_revision=0,
+            tools=[
+                _make_tool(name="web_search", arguments='{"query": "test"}'),
+            ],
+        )
+        outputs = list(processor.process(chunk))
+        assert outputs == []
+        event = processor.text_output_queue.get_nowait()
+        assert event.text == ""
+        assert event.tools == []  # all tools filtered out
+
+
+def test_client_tools_passed_through():
+    tracker = SpeculativeTurnTracker()
+    tracker.observe("turn_1", 0)
+    processor = _processor(tracker)
+
+    with patch("speech_to_speech.LLM.lm_output_processor.is_server_side_tool", return_value=False):
+        chunk = LLMResponseChunk(
+            text="hello",
+            turn_id="turn_1",
+            turn_revision=0,
+            tools=[
+                _make_tool(name="get_weather", arguments='{"city": "London"}'),
+            ],
+        )
+        outputs = list(processor.process(chunk))
+        event = processor.text_output_queue.get_nowait()
+        assert event.text == "hello"
+        assert len(event.tools) == 1
+        assert event.tools[0].name == "get_weather"
+
+
+def test_mixed_tools_filtered_correctly():
+    tracker = SpeculativeTurnTracker()
+    tracker.observe("turn_1", 0)
+    processor = _processor(tracker)
+
+    def fake_is_server_side(name: str) -> bool:
+        return name in ("web_search",)
+
+    with patch("speech_to_speech.LLM.lm_output_processor.is_server_side_tool", side_effect=fake_is_server_side):
+        chunk = LLMResponseChunk(
+            text="checking...",
+            turn_id="turn_1",
+            turn_revision=0,
+            tools=[
+                _make_tool(name="web_search", arguments='{"query": "test"}'),
+                _make_tool(name="get_weather", arguments='{"city": "London"}'),
+            ],
+        )
+        outputs = list(processor.process(chunk))
+        event = processor.text_output_queue.get_nowait()
+        assert event.text == "checking..."
+        assert event.tools is not None
+        assert len(event.tools) == 1
+        assert event.tools[0].name == "get_weather"

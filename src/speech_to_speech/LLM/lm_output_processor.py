@@ -13,6 +13,7 @@ from collections.abc import Iterator
 from queue import Queue
 
 from speech_to_speech.baseHandler import BaseHandler
+from speech_to_speech.LLM.server_side_tools import is_server_side_tool
 from speech_to_speech.pipeline.events import AssistantTextEvent, ResponseFailedEvent, TokenUsageEvent
 from speech_to_speech.pipeline.handler_types import LLMOut, TTSIn
 from speech_to_speech.pipeline.messages import EndOfResponse, LLMResponseChunk, TokenUsage, TTSInput
@@ -128,8 +129,12 @@ class LMOutputProcessor(BaseHandler[LLMOut, TTSIn]):
                 cancel_generation=lm_output.cancel_generation,
             )
             if lm_output.tools:
-                event.tools = lm_output.tools
-                logger.info(f"Sending to clients: text='{lm_output.text}', tools={[t.name for t in lm_output.tools]}")
+                client_tools = [t for t in lm_output.tools if not is_server_side_tool(t.name)]
+                if client_tools:
+                    event.tools = client_tools
+                    logger.info(f"Sending to clients: text='{lm_output.text}', tools={[t.name for t in client_tools]}")
+                else:
+                    logger.debug(f"Sending to clients: text='{lm_output.text}' (server-side only, filtered)")
             else:
                 logger.debug(f"Sending to clients: text='{lm_output.text}' (no tools)")
             self.text_output_queue.put(event)

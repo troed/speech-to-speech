@@ -92,12 +92,13 @@ class FacebookMMSTTSHandler(BaseHandler[TTSIn, TTSOut]):
 
     def load_model(self, language_code: str) -> None:
         try:
-            model_name = f"facebook/mms-tts-{WHISPER_LANGUAGE_TO_FACEBOOK_LANGUAGE[language_code]}"
+            fb_code = WHISPER_LANGUAGE_TO_FACEBOOK_LANGUAGE.get(language_code, language_code)
+            model_name = f"facebook/mms-tts-{fb_code}"
             logger.info(f"Loading model: {model_name}")
             self.model = VitsModel.from_pretrained(model_name).to(self.device)  # type: ignore[arg-type]
             self.tokenizer = AutoTokenizer.from_pretrained(model_name)
             self.language = language_code
-        except KeyError:
+        except Exception:
             logger.warning(f"Unsupported language: {language_code}. Falling back to English.")
             self.load_model("en")
 

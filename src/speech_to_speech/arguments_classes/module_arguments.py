@@ -70,3 +70,10 @@ class ModuleArguments:
             "num_pipelines; further connections are rejected. Only valid for --mode realtime. Default is 1."
         },
     )
+    mcp_url: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "URL of the tinysearch MCP server (e.g., http://localhost:8765). "
+            "Default is http://localhost:8765."
+        },
+    )

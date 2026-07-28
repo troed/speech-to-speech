@@ -7,7 +7,7 @@ class FacebookMMSTTSHandlerArguments:
         default="facebook/mms-tts-eng",
         metadata={"help": "The model name to use. Default is 'facebook/mms-tts-eng'."},
     )
-    tts_language: str = field(
+    facebook_mms_language: str = field(
         default="en",
         metadata={"help": "The language code for the TTS model. Default is 'en' for English."},
     )

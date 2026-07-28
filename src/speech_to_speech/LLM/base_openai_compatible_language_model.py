@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
@@ -315,15 +316,18 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             logger.info("LLM generation cancelled (stale speculative turn)")
             return
         if not is_out_of_band(turn.response):
-            # Flush assistant text accumulated before this call first (so history
-            # order matches what the client received), then persist the call —
-            # all before the chunk leaves for the client.
             chat = turn.runtime_config.chat
             for pending_item in state.pending:
                 chat.add_item(pending_item)
             state.pending.clear()
             chat.add_item(fc_item)
-        yield self._chunk(turn, tools=[item])
+        # Server-side tools are recorded to history (the execution loop in
+        # _generate will find them via state.tools) but NOT forwarded to the
+        # client — the server executes them and re-triggers the LLM.
+        from speech_to_speech.LLM.server_side_tools import is_server_side_tool
+
+        if not is_server_side_tool(item.name):
+            yield self._chunk(turn, tools=[item])
 
     # ── consumption ─────────────────────────────────────────────────────────--
 
@@ -446,70 +450,114 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         turn: _Turn,
         optional_kwargs: dict[str, Any],
     ) -> Iterator[LLMOut]:
-        api_response: Any = None
-        state = _GenState()
-        error_message: str | None = None
-        api_input = self._serialize(active_chat)
-        # Images the model actually sees this turn; only these are stripped on
-        # write-back, so an image a fast client injects mid-generation for the
-        # next turn survives (it is not in this serialized snapshot).
-        consumed_image_ids = active_chat.image_message_ids()
-        if not api_input:
-            # Nothing to send: empty `instructions` and no `input` (in the response,
-            # the default conversation, or the out-of-band context). The provider
-            # would reject this; fail with a clear message instead of an opaque error.
-            error_message = "Cannot generate a response: no instructions and no input were provided."
+        from speech_to_speech.LLM.server_side_tools import SERVER_SIDE_TOOLS, is_server_side_tool
 
-        try:
-            if error_message is None:
-                api_response = self._request(api_input, optional_kwargs)
-            if api_response is not None:
-                events = self._iter_events(api_response)
-                if self.stream:
-                    yield from self._consume_streaming(events, state, turn)
-                else:
-                    yield from self._consume_nonstreaming(events, state, turn)
-        except httpx.ReadTimeout:
-            logger.warning(
-                "OpenAI API read timed out after %.1fs; ending the current response",
-                self.request_timeout_s,
-            )
-            if not self._generation_is_stale(turn.gen) and self._turn_output_allowed(turn.turn_id, turn.turn_revision):
-                # Canned apology carries no language_code (mirrors the prior handlers).
-                yield LLMResponseChunk(
-                    text="Wow I'm a bit slow today, could you repeat that?",
-                    runtime_config=turn.runtime_config,
-                    response=turn.response,
-                    turn_id=turn.turn_id,
-                    turn_revision=turn.turn_revision,
-                    speech_stopped_at_s=turn.speech_stopped_at_s,
-                    cancel_generation=turn.gen,
+        MAX_SERVER_TOOL_ITERATIONS = 5
+        error_message: str | None = None
+        server_tool_iterations = 0
+
+        while True:
+            state = _GenState()
+            api_response: Any = None
+            api_input = self._serialize(active_chat)
+            consumed_image_ids = active_chat.image_message_ids()
+            if not api_input:
+                error_message = "Cannot generate a response: no instructions and no input were provided."
+
+            try:
+                if error_message is None:
+                    api_response = self._request(api_input, optional_kwargs)
+                if api_response is not None:
+                    events = self._iter_events(api_response)
+                    if self.stream:
+                        yield from self._consume_streaming(events, state, turn)
+                    else:
+                        yield from self._consume_nonstreaming(events, state, turn)
+            except httpx.ReadTimeout:
+                logger.warning(
+                    "OpenAI API read timed out after %.1fs; ending the current response",
+                    self.request_timeout_s,
                 )
-        except Exception as exc:
-            # Any other generation failure must still terminate the response: record
-            # the error and fall through to the EndOfResponse below. Without this the
-            # exception would escape process() and no EndOfResponse would be emitted,
-            # leaving st.in_response stuck and locking every subsequent response.
-            logger.exception("LLM generation failed; ending the current response")
-            if error_message is None:
-                error_message = f"Language model generation failed: {exc}"
-        finally:
-            if api_response is not None and hasattr(api_response, "close"):
+                if not self._generation_is_stale(turn.gen) and self._turn_output_allowed(
+                    turn.turn_id, turn.turn_revision
+                ):
+                    yield LLMResponseChunk(
+                        text="Wow I'm a bit slow today, could you repeat that?",
+                        runtime_config=turn.runtime_config,
+                        response=turn.response,
+                        turn_id=turn.turn_id,
+                        turn_revision=turn.turn_revision,
+                        speech_stopped_at_s=turn.speech_stopped_at_s,
+                        cancel_generation=turn.gen,
+                    )
+                error_message = "timeout"
+                break
+            except Exception as exc:
+                logger.exception("LLM generation failed; ending the current response")
+                if error_message is None:
+                    error_message = f"Language model generation failed: {exc}"
+                break
+            finally:
+                if api_response is not None and hasattr(api_response, "close"):
+                    try:
+                        api_response.close()
+                    except Exception:
+                        pass
+
+            if error_message is not None:
+                break
+
+            server_tools = [t for t in state.tools if is_server_side_tool(t.name)]
+            if not server_tools:
+                break
+
+            server_tool_iterations += 1
+            if server_tool_iterations > MAX_SERVER_TOOL_ITERATIONS:
+                logger.warning(
+                    "Server-side tool iteration limit (%d) reached; terminating loop",
+                    MAX_SERVER_TOOL_ITERATIONS,
+                )
+                error_message = "Tool execution exceeded maximum iterations"
+                break
+
+            for tool in server_tools:
+                entry = SERVER_SIDE_TOOLS.get(tool.name)
+                if entry is None:
+                    logger.warning("Unknown server-side tool: %s", tool.name)
+                    continue
+                handler = entry["handler"]
                 try:
-                    api_response.close()
-                except Exception:
-                    pass
+                    args = json.loads(tool.arguments) if isinstance(tool.arguments, str) else tool.arguments
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("Failed to parse arguments for tool %s: %s", tool.name, tool.arguments)
+                    continue
+                from openai.types.realtime.conversation_item import RealtimeConversationItemFunctionCallOutput
+                from speech_to_speech.utils.utils import _generate_id
+
+                output = handler(**args)
+                tool_output = RealtimeConversationItemFunctionCallOutput(
+                    id=_generate_id("msg"),
+                    call_id=tool.call_id,
+                    output=output,
+                    type="function_call_output",
+                )
+                original_chat.append_tool_output(tool.call_id, tool_output)
+
+            if is_out_of_band(turn.response):
+                try:
+                    active_chat = build_active_chat(original_chat, turn.response)
+                except ChatItemError as exc:
+                    error_message = str(exc)
+                    break
+            else:
+                active_chat = original_chat.copy()
 
         if (
             error_message is None
             and not self._generation_is_stale(turn.gen)
             and self._turn_output_allowed(turn.turn_id, turn.turn_revision)
         ):
-            # Out-of-band responses emit output and usage but never write back to the
-            # default conversation (their context was a throwaway chat).
             if not is_out_of_band(turn.response):
-                # Tool calls (and any assistant text preceding them) were already
-                # written eagerly in _record_tool_call; only trailing items remain.
                 for item in state.pending:
                     original_chat.add_item(item)
                 original_chat.strip_images(consumed_image_ids)
@@ -555,6 +603,12 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         req_tool_choice = (
             response.tool_choice if response and response.tool_choice else runtime_config.session.tool_choice
         )
+        # Inject server-side tool definitions so the model can call them
+        from speech_to_speech.LLM.server_side_tools import get_server_side_tool_definitions
+
+        server_tool_defs = get_server_side_tool_definitions()
+        if server_tool_defs:
+            req_tools = list(req_tools) + server_tool_defs if req_tools else list(server_tool_defs)
         wants_audio = response_wants_audio(response)
         self._apply_config(active_chat, instructions, wants_audio)
         language_code, lang_name = resolve_auto_language(language_code)

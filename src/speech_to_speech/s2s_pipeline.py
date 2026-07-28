@@ -986,6 +986,13 @@ def main() -> None:
 
     setup_logger(args.module_kwargs.log_level)
 
+    mcp_url = args.module_kwargs.mcp_url
+    if mcp_url:
+        from speech_to_speech.LLM.server_side_tools import set_mcp_base_url
+
+        set_mcp_base_url(mcp_url)
+        logger.info("MCP server base URL set to %s", mcp_url)
+
     if args.module_kwargs.num_pipelines < 1:
         raise ValueError(f"--num_pipelines must be >= 1, got {args.module_kwargs.num_pipelines}")
 
