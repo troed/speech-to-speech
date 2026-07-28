@@ -77,3 +77,29 @@ class ModuleArguments:
             "Default is http://localhost:8765."
         },
     )
+    wake_word_model: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Path to openWakeWord .tflite model file for wake word detection. "
+            "When set, the system only responds after hearing the wake word. "
+            "When not set (default), the system responds to any speech (current behavior)."
+        },
+    )
+    wake_word_threshold: float = field(
+        default=0.5,
+        metadata={
+            "help": "Detection confidence threshold (0-1) for wake word activation. Default is 0.5."
+        },
+    )
+    wake_word_activation_timeout_s: float = field(
+        default=30.0,
+        metadata={
+            "help": "Seconds of silence before the wake word handler goes back to sleep. Default is 30."
+        },
+    )
+    wake_word_preroll_ms: int = field(
+        default=1000,
+        metadata={
+            "help": "Milliseconds of audio to retain before the detected wake word and forward on activation. Default is 1000."
+        },
+    )

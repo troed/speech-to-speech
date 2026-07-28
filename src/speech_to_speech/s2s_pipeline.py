@@ -47,6 +47,7 @@ from speech_to_speech.arguments_classes.responses_api_language_model_arguments i
 from speech_to_speech.arguments_classes.socket_receiver_arguments import SocketReceiverArguments
 from speech_to_speech.arguments_classes.socket_sender_arguments import SocketSenderArguments
 from speech_to_speech.arguments_classes.vad_arguments import VADHandlerArguments
+from speech_to_speech.arguments_classes.wake_word_arguments import WakeWordHandlerArguments
 from speech_to_speech.arguments_classes.websocket_streamer_arguments import WebSocketStreamerArguments
 from speech_to_speech.arguments_classes.whisper_stt_arguments import WhisperSTTHandlerArguments
 from speech_to_speech.baseHandler import BaseHandler
@@ -107,6 +108,7 @@ class ParsedArguments:
     pocket_tts_handler_kwargs: PocketTTSHandlerArguments
     kokoro_tts_handler_kwargs: KokoroTTSHandlerArguments
     qwen3_tts_handler_kwargs: Qwen3TTSHandlerArguments
+    wake_word_handler_kwargs: WakeWordHandlerArguments
 
 
 def rename_args(args: Any, prefix: str) -> None:
@@ -200,6 +202,12 @@ def parse_arguments() -> ParsedArguments:
         pocket_tts_handler_kwargs=by_type[PocketTTSHandlerArguments],
         kokoro_tts_handler_kwargs=by_type[KokoroTTSHandlerArguments],
         qwen3_tts_handler_kwargs=by_type[Qwen3TTSHandlerArguments],
+        wake_word_handler_kwargs=WakeWordHandlerArguments(
+            model_path=by_type[ModuleArguments].wake_word_model,
+            threshold=by_type[ModuleArguments].wake_word_threshold,
+            activation_timeout_s=by_type[ModuleArguments].wake_word_activation_timeout_s,
+            preroll_ms=by_type[ModuleArguments].wake_word_preroll_ms,
+        ),
     )
 
 
@@ -376,6 +384,7 @@ def _build_pipeline_handlers(
     kokoro_tts_handler_kwargs: KokoroTTSHandlerArguments,
     qwen3_tts_handler_kwargs: Qwen3TTSHandlerArguments,
     speculative_turns: SpeculativeTurnTracker | None = None,
+    wake_word_handler_kwargs: WakeWordHandlerArguments | None = None,
 ) -> list[Any]:
     """Build the shared handler chain: VAD → STT → TranscriptionNotifier → LM → LMOutputProcessor → TTS.
 
@@ -385,9 +394,24 @@ def _build_pipeline_handlers(
     """
     from speech_to_speech.LLM.lm_output_processor import LMOutputProcessor
 
+    if wake_word_handler_kwargs is not None and wake_word_handler_kwargs.model_path is not None:
+        from speech_to_speech.WakeWord.wake_word_handler import WakeWordHandler
+
+        ww_out_queue: Queue = Queue()
+        wake_word = WakeWordHandler(
+            stop_event,
+            queue_in=recv_audio_chunks_queue,
+            queue_out=ww_out_queue,
+            setup_kwargs=vars(wake_word_handler_kwargs),
+        )
+        vad_in_queue: Queue = ww_out_queue
+    else:
+        wake_word = None
+        vad_in_queue = recv_audio_chunks_queue
+
     vad = VADHandler(
         stop_event,
-        queue_in=recv_audio_chunks_queue,
+        queue_in=vad_in_queue,
         queue_out=spoken_prompt_queue,
         setup_args=(should_listen,),
         setup_kwargs=vars(vad_handler_kwargs),
@@ -442,7 +466,10 @@ def _build_pipeline_handlers(
         qwen3_tts_handler_kwargs,
     )
 
-    return [vad, stt, transcription_notifier, lm, lm_processor, tts]
+    handlers = [vad, stt, transcription_notifier, lm, lm_processor, tts]
+    if wake_word is not None:
+        handlers.insert(0, wake_word)
+    return handlers
 
 
 def _build_realtime_pipeline_unit(
@@ -463,6 +490,7 @@ def _build_realtime_pipeline_unit(
     pocket_tts_handler_kwargs: PocketTTSHandlerArguments,
     kokoro_tts_handler_kwargs: KokoroTTSHandlerArguments,
     qwen3_tts_handler_kwargs: Qwen3TTSHandlerArguments,
+    wake_word_handler_kwargs: WakeWordHandlerArguments | None = None,
 ) -> "PipelineUnit":
     """Build one isolated realtime pipeline (own queues, events, service, handlers).
 
@@ -560,6 +588,7 @@ def _build_realtime_pipeline_unit(
         kokoro_tts_handler_kwargs=kokoro_tts_kw,
         qwen3_tts_handler_kwargs=qwen3_tts_kw,
         speculative_turns=speculative_turns,
+        wake_word_handler_kwargs=wake_word_handler_kwargs,
     )
     for h in handlers:
         h.pipeline_index = index
@@ -597,6 +626,7 @@ def build_pipeline(
     kokoro_tts_handler_kwargs: KokoroTTSHandlerArguments,
     qwen3_tts_handler_kwargs: Qwen3TTSHandlerArguments,
     queues_and_events: dict[str, Any],
+    wake_word_handler_kwargs: WakeWordHandlerArguments | None = None,
 ) -> ThreadManager:
     stop_event = queues_and_events["stop_event"]
     should_listen = queues_and_events["should_listen"]
@@ -658,6 +688,7 @@ def build_pipeline(
                 pocket_tts_handler_kwargs=pocket_tts_handler_kwargs,
                 kokoro_tts_handler_kwargs=kokoro_tts_handler_kwargs,
                 qwen3_tts_handler_kwargs=qwen3_tts_handler_kwargs,
+                wake_word_handler_kwargs=wake_word_handler_kwargs,
             )
             for i in range(pool_size)
         ]
@@ -742,6 +773,7 @@ def build_pipeline(
         pocket_tts_handler_kwargs=pocket_tts_handler_kwargs,
         kokoro_tts_handler_kwargs=kokoro_tts_handler_kwargs,
         qwen3_tts_handler_kwargs=qwen3_tts_handler_kwargs,
+        wake_word_handler_kwargs=wake_word_handler_kwargs,
     )
 
     return ThreadManager([*comms_handlers, *pipeline_handlers])
@@ -1055,6 +1087,7 @@ def main() -> None:
         args.kokoro_tts_handler_kwargs,
         args.qwen3_tts_handler_kwargs,
         queues_and_events,
+        wake_word_handler_kwargs=args.wake_word_handler_kwargs,
     )
 
     # Set up graceful shutdown handler
