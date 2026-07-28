@@ -18,6 +18,7 @@ from speech_to_speech.arguments_classes.responses_api_language_model_arguments i
 from speech_to_speech.arguments_classes.socket_receiver_arguments import SocketReceiverArguments
 from speech_to_speech.arguments_classes.socket_sender_arguments import SocketSenderArguments
 from speech_to_speech.arguments_classes.vad_arguments import VADHandlerArguments
+from speech_to_speech.arguments_classes.wake_word_arguments import WakeWordHandlerArguments
 from speech_to_speech.arguments_classes.websocket_streamer_arguments import WebSocketStreamerArguments
 from speech_to_speech.arguments_classes.whisper_stt_arguments import WhisperSTTHandlerArguments
 from speech_to_speech.s2s_pipeline import ParsedArguments, parse_arguments
@@ -69,6 +70,7 @@ EXPECTED_FIELD_TYPES = {
     "parakeet_tdt_stt_handler_kwargs": ParakeetTDTSTTHandlerArguments,
     "language_model_handler_kwargs": LanguageModelHandlerArguments,
     "responses_api_language_model_handler_kwargs": ResponsesApiLanguageModelHandlerArguments,
+    "wake_word_handler_kwargs": WakeWordHandlerArguments,
     "chat_tts_handler_kwargs": ChatTTSHandlerArguments,
     "facebook_mms_tts_handler_kwargs": FacebookMMSTTSHandlerArguments,
     "pocket_tts_handler_kwargs": PocketTTSHandlerArguments,
