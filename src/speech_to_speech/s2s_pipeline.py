@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import json
 import logging
 import os
@@ -391,6 +392,7 @@ def _build_pipeline_handlers(
     wake_word_handler_kwargs: WakeWordHandlerArguments | None = None,
     response_done_event: Event | None = None,
     echo_filter: EchoFilter | None = None,
+    mcp_client_manager: Any = None,
 ) -> list[Any]:
     """Build the shared handler chain: VAD → STT → TranscriptionNotifier → LM → LMOutputProcessor → TTS.
 
@@ -449,6 +451,10 @@ def _build_pipeline_handlers(
         vars(responses_api_language_model_handler_kwargs)["search_instructions"] = search_instructions
         vars(language_model_handler_kwargs)["search_instructions"] = search_instructions
 
+    if mcp_client_manager is not None:
+        vars(responses_api_language_model_handler_kwargs)["mcp_manager"] = mcp_client_manager
+        vars(language_model_handler_kwargs)["mcp_manager"] = mcp_client_manager
+
     vad = VADHandler(
         stop_event,
         queue_in=vad_in_queue,
@@ -494,6 +500,8 @@ def _build_pipeline_handlers(
     if search_chime is not None:
         processor_kwargs["search_chime_bytes"] = search_chime
         processor_kwargs["chime_output_queue"] = send_audio_chunks_queue
+    if mcp_client_manager is not None:
+        processor_kwargs["mcp_manager"] = mcp_client_manager
     lm_processor = LMOutputProcessor(
         stop_event,
         queue_in=lm_response_queue,
@@ -539,6 +547,7 @@ def _build_realtime_pipeline_unit(
     kokoro_tts_handler_kwargs: KokoroTTSHandlerArguments,
     qwen3_tts_handler_kwargs: Qwen3TTSHandlerArguments,
     wake_word_handler_kwargs: WakeWordHandlerArguments | None = None,
+    mcp_client_manager: Any = None,
 ) -> "PipelineUnit":
     """Build one isolated realtime pipeline (own queues, events, service, handlers).
 
@@ -677,6 +686,7 @@ def build_pipeline(
     qwen3_tts_handler_kwargs: Qwen3TTSHandlerArguments,
     queues_and_events: dict[str, Any],
     wake_word_handler_kwargs: WakeWordHandlerArguments | None = None,
+    mcp_client_manager: Any = None,
 ) -> ThreadManager:
     stop_event = queues_and_events["stop_event"]
     should_listen = queues_and_events["should_listen"]
@@ -700,8 +710,9 @@ def build_pipeline(
             input_queue=recv_audio_chunks_queue,
             output_queue=send_audio_chunks_queue,
             should_listen=should_listen,
-            response_done_event=response_done_event,
-        )
+        response_done_event=response_done_event,
+        mcp_client_manager=mcp_client_manager,
+    )
         comms_handlers = [local_audio_streamer]
         should_listen.set()
     elif module_kwargs.mode == "websocket":
@@ -742,6 +753,7 @@ def build_pipeline(
                 kokoro_tts_handler_kwargs=kokoro_tts_handler_kwargs,
                 qwen3_tts_handler_kwargs=qwen3_tts_handler_kwargs,
                 wake_word_handler_kwargs=wake_word_handler_kwargs,
+                mcp_client_manager=mcp_client_manager,
             )
             for i in range(pool_size)
         ]
@@ -833,6 +845,7 @@ def build_pipeline(
         qwen3_tts_handler_kwargs=qwen3_tts_handler_kwargs,
         wake_word_handler_kwargs=wake_word_handler_kwargs,
         response_done_event=response_done_event,
+        mcp_client_manager=mcp_client_manager,
     )
 
     return ThreadManager([*comms_handlers, *pipeline_handlers])
@@ -1077,12 +1090,19 @@ def main() -> None:
 
     setup_logger(args.module_kwargs.log_level)
 
-    mcp_url = args.module_kwargs.mcp_url
-    if mcp_url:
-        from speech_to_speech.LLM.server_side_tools import set_mcp_base_url
+    mcp_client_manager = None
+    mcp_config = args.module_kwargs.mcp_config
+    if mcp_config and Path(mcp_config).exists():
+        from speech_to_speech.LLM.mcp_client_manager import MCPClientManager
 
-        set_mcp_base_url(mcp_url)
-        logger.info("MCP server base URL set to %s", mcp_url)
+        mcp_client_manager = MCPClientManager(str(mcp_config))
+        try:
+            asyncio.run(mcp_client_manager.start())
+        except Exception as exc:
+            logger.warning("Failed to start MCP client manager: %s", exc)
+            mcp_client_manager = None
+        else:
+            logger.info("MCP client manager started with %d servers", mcp_client_manager.server_count)
 
     if args.module_kwargs.num_pipelines < 1:
         raise ValueError(f"--num_pipelines must be >= 1, got {args.module_kwargs.num_pipelines}")
@@ -1147,6 +1167,7 @@ def main() -> None:
         args.qwen3_tts_handler_kwargs,
         queues_and_events,
         wake_word_handler_kwargs=args.wake_word_handler_kwargs,
+        mcp_client_manager=mcp_client_manager,
     )
 
     # Set up graceful shutdown handler
