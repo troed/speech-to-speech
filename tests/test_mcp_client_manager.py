@@ -97,3 +97,52 @@ def test_namespace_collision_warns():
     assert manager._tool_to_server["weather"] == "server_b"
 
     logger.removeHandler(handler)
+
+
+@pytest.mark.asyncio
+async def test_start_creates_clients_and_discovers_tools():
+    from unittest.mock import patch
+
+    mock_client = MagicMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_tool = MagicMock()
+    mock_tool.name = "search"
+    mock_tool.description = "Search the web"
+    mock_tool.input_schema = {
+        "type": "object",
+        "properties": {"query": {"type": "string"}},
+        "required": ["query"],
+    }
+    mock_client.list_tools = AsyncMock(
+        return_value=MagicMock(tools=[mock_tool])
+    )
+
+    with patch(
+        "mcp.Client",
+        return_value=mock_client,
+    ) as mock_client_cls, patch(
+        "mcp.client.streamable_http.streamable_http_client",
+        return_value=MagicMock(),
+    ) as mock_http, patch(
+        "mcp.client.stdio.stdio_client",
+        return_value=MagicMock(),
+    ) as mock_stdio:
+
+        manager = MCPClientManager.__new__(MCPClientManager)
+        manager._servers = {
+            "tinysearch": {
+                "type": "http",
+                "url": "http://localhost:8765/mcp",
+            }
+        }
+        manager._clients = {}
+        manager._tool_to_server = {}
+        manager._tool_definitions = []
+
+        await manager.start()
+
+        assert "tinysearch" in manager._clients
+        assert manager._tool_to_server.get("search") == "tinysearch"
+        assert len(manager._tool_definitions) == 1
+        assert manager._tool_definitions[0]["name"] == "search"
