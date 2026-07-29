@@ -343,18 +343,25 @@ async def websocket_client(
                 clear_live()
                 print("Connected. Press Ctrl+C to stop.", flush=True)
 
+                # Start receive_audio immediately so TTS/data sent during
+                # wake-word wait is buffered and not lost.
+                recv_task = asyncio.create_task(receive_audio(ws))
+                send_task = None
+
                 if wake_event is not None:
-                    # Wait for wake word before starting to stream
                     logger.info("Waiting for wake word...")
                     while not wake_event.is_set() and not stop_event.is_set():
                         await asyncio.sleep(0.1)
                     if stop_event.is_set():
+                        recv_task.cancel()
+                        try:
+                            await recv_task
+                        except asyncio.CancelledError:
+                            pass
                         break
 
-                tasks = [
-                    asyncio.create_task(send_audio(ws)),
-                    asyncio.create_task(receive_audio(ws)),
-                ]
+                send_task = asyncio.create_task(send_audio(ws))
+                tasks = [send_task, recv_task]
                 await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
                 for t in tasks:
                     t.cancel()
