@@ -234,3 +234,4 @@ uv.lock*.opus
 *.onnx
 run.sh
 swerun.sh
+mcp.json
