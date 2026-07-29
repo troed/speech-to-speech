@@ -1151,6 +1151,7 @@ def main() -> None:
             console.print("\n[yellow]Shutting down gracefully...[/yellow]")
             pipeline_manager.stop()
             console.print("[green]✓ Pipeline stopped successfully[/green]")
+            os._exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -1163,6 +1164,7 @@ def main() -> None:
             console.print("\n[yellow]Shutting down gracefully...[/yellow]")
             pipeline_manager.stop()
             console.print("[green]✓ Pipeline stopped successfully[/green]")
+            os._exit(0)
 
 
 if __name__ == "__main__":
