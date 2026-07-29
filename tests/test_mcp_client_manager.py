@@ -136,13 +136,11 @@ async def test_start_creates_clients_and_discovers_tools():
                 "url": "http://localhost:8765/mcp",
             }
         }
-        manager._clients = {}
         manager._tool_to_server = {}
         manager._tool_definitions = []
 
         await manager.start()
 
-        assert "tinysearch" in manager._clients
         assert manager._tool_to_server.get("search") == "tinysearch"
         assert len(manager._tool_definitions) == 1
         assert manager._tool_definitions[0]["name"] == "search"

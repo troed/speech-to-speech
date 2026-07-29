@@ -5,7 +5,6 @@ import logging
 from pathlib import Path
 from typing import Any
 
-import mcp
 from mcp_types import TextContent
 
 logger = logging.getLogger(__name__)
@@ -15,7 +14,6 @@ class MCPClientManager:
     def __init__(self, config_path: str) -> None:
         self._config_path = Path(config_path)
         self._servers: dict[str, dict[str, Any]] = {}
-        self._clients: dict[str, mcp.Client] = {}
         self._tool_to_server: dict[str, str] = {}
         self._tool_definitions: list[dict[str, Any]] = []
         self._parse_config()
@@ -70,23 +68,9 @@ class MCPClientManager:
     def get_tool_definitions(self) -> list[dict[str, Any]]:
         return list(self._tool_definitions)
 
-    def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> str:
-        import asyncio
-        server_name = self._tool_to_server.get(tool_name)
-        if server_name is None:
-            raise ValueError(f"Unknown tool: {tool_name}")
-        client = self._clients.get(server_name)
-        if client is None:
-            raise RuntimeError(f"No client for server '{server_name}'")
-        result = asyncio.run(client.call_tool(tool_name, arguments))
-        return "\n".join(
-            block.text
-            for block in result.content
-            if isinstance(block, TextContent)
-        )
-
     async def start(self) -> None:
-        """Connect to all configured servers and discover tools."""
+        """Connect to all configured servers, discover tools, then close connections."""
+        import mcp
         from mcp.client.stdio import StdioServerParameters, stdio_client
 
         for name, cfg in self._servers.items():
@@ -100,48 +84,69 @@ class MCPClientManager:
                         args=cfg.get("args", []),
                         env=cfg.get("env"),
                     )
-                    transport = stdio_client(params)
-                    client = mcp.Client(transport)
+                    client = mcp.Client(stdio_client(params))
             except Exception as exc:
                 logger.warning("MCP server '%s': failed to create client: %s", name, exc)
                 continue
 
             try:
-                await client.__aenter__()
-                self._clients[name] = client
+                async with client:
+                    try:
+                        tools_result = await client.list_tools()
+                    except Exception as exc:
+                        logger.warning("MCP server '%s': tools/list failed: %s", name, exc)
+                        continue
+
+                    for tool in tools_result.tools:
+                        definition: dict[str, Any] = {
+                            "type": "function",
+                            "name": tool.name,
+                            "description": tool.description or "",
+                            "parameters": tool.input_schema if tool.input_schema else {"type": "object", "properties": {}},
+                        }
+                        self._register_tool(tool.name, name, definition)
+
+                    logger.info(
+                        "MCP server '%s': %d tools discovered",
+                        name,
+                        len(tools_result.tools),
+                    )
             except Exception as exc:
-                logger.warning("MCP server '%s': failed to connect: %s", name, exc)
-                continue
+                logger.warning("MCP server '%s': connection failed: %s", name, exc)
 
-            try:
-                tools_result = await client.list_tools()
-            except Exception as exc:
-                logger.warning("MCP server '%s': tools/list failed: %s", name, exc)
-                continue
+    def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> str:
+        import asyncio
+        import mcp
+        from mcp.client.stdio import StdioServerParameters, stdio_client
 
-            for tool in tools_result.tools:
-                definition: dict[str, Any] = {
-                    "type": "function",
-                    "name": tool.name,
-                    "description": tool.description or "",
-                    "parameters": tool.input_schema if tool.input_schema else {"type": "object", "properties": {}},
-                }
-                self._register_tool(tool.name, name, definition)
+        server_name = self._tool_to_server.get(tool_name)
+        if server_name is None:
+            raise ValueError(f"Unknown tool: {tool_name}")
+        cfg = self._servers.get(server_name)
+        if cfg is None:
+            raise RuntimeError(f"No server config for '{server_name}'")
 
-            logger.info(
-                "MCP server '%s': connected, %d tools discovered",
-                name,
-                len(tools_result.tools),
+        transport_type = cfg["type"]
+        if transport_type == "http":
+            client = mcp.Client(cfg["url"])
+        else:
+            params = StdioServerParameters(
+                command=cfg["command"],
+                args=cfg.get("args", []),
+                env=cfg.get("env"),
+            )
+            client = mcp.Client(stdio_client(params))
+
+        async def _run() -> str:
+            async with client:
+                result = await client.call_tool(tool_name, arguments)
+            return "\n".join(
+                block.text
+                for block in result.content
+                if isinstance(block, TextContent)
             )
 
-    async def close(self) -> None:
-        """Close all client connections."""
-        for name, client in list(self._clients.items()):
-            try:
-                await client.__aexit__(None, None, None)
-            except Exception as exc:
-                logger.warning("MCP server '%s': error closing: %s", name, exc)
-        self._clients.clear()
+        return asyncio.run(_run())
 
     @property
     def server_count(self) -> int:
