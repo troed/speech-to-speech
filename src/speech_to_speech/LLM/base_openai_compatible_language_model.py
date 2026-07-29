@@ -164,6 +164,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         self._search_chime_bytes: bytes | None = _kwargs.pop("search_chime_bytes", None)
         self._chime_output_queue: Queue | None = _kwargs.pop("chime_output_queue", None)
         self._search_instructions: str | None = _kwargs.pop("search_instructions", None)
+        self._mcp_manager: Any = _kwargs.pop("mcp_manager", None)
         self.warmup()
 
     @staticmethod
@@ -337,9 +338,13 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         # Server-side tools are recorded to history (the execution loop in
         # _generate will find them via state.tools) but NOT forwarded to the
         # client — the server executes them and re-triggers the LLM.
-        from speech_to_speech.LLM.server_side_tools import is_server_side_tool
-
-        if not is_server_side_tool(item.name):
+        _mcp = getattr(self, "_mcp_manager", None)
+        if _mcp is not None:
+            is_ss = _mcp.is_server_side_tool(item.name)
+        else:
+            from speech_to_speech.LLM.server_side_tools import is_server_side_tool as _legacy_is_ss
+            is_ss = _legacy_is_ss(item.name)
+        if not is_ss:
             yield self._chunk(turn, tools=[item])
 
     # ── consumption ─────────────────────────────────────────────────────────--
@@ -463,8 +468,6 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         turn: _Turn,
         optional_kwargs: dict[str, Any],
     ) -> Iterator[LLMOut]:
-        from speech_to_speech.LLM.server_side_tools import SERVER_SIDE_TOOLS, is_server_side_tool
-
         MAX_SERVER_TOOL_ITERATIONS = 5
         error_message: str | None = None
         server_tool_iterations = 0
@@ -520,7 +523,13 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             if error_message is not None:
                 break
 
-            server_tools = [t for t in state.tools if is_server_side_tool(t.name)]
+            server_tools: list[Any] = []
+            _mcp = getattr(self, "_mcp_manager", None)
+            if _mcp is not None:
+                server_tools = [t for t in state.tools if _mcp.is_server_side_tool(t.name)]
+            else:
+                from speech_to_speech.LLM.server_side_tools import is_server_side_tool as _legacy_is_ss
+                server_tools = [t for t in state.tools if _legacy_is_ss(t.name)]
             if not server_tools:
                 break
 
@@ -534,11 +543,6 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                 break
 
             for tool in server_tools:
-                entry = SERVER_SIDE_TOOLS.get(tool.name)
-                if entry is None:
-                    logger.warning("Unknown server-side tool: %s", tool.name)
-                    continue
-                handler = entry["handler"]
                 try:
                     args = json.loads(tool.arguments) if isinstance(tool.arguments, str) else tool.arguments
                 except (json.JSONDecodeError, TypeError):
@@ -548,7 +552,17 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                 from openai.types.realtime.conversation_item import RealtimeConversationItemFunctionCallOutput
                 from speech_to_speech.utils.utils import _generate_id
 
-                output = handler(**args)
+                _mcp = getattr(self, "_mcp_manager", None)
+                if _mcp is not None:
+                    output = _mcp.call_tool(tool.name, args)
+                else:
+                    from speech_to_speech.LLM.server_side_tools import SERVER_SIDE_TOOLS
+                    entry = SERVER_SIDE_TOOLS.get(tool.name)
+                    if entry is None:
+                        logger.warning("Unknown server-side tool: %s", tool.name)
+                        continue
+                    handler = entry["handler"]
+                    output = handler(**args)
                 tool_output = RealtimeConversationItemFunctionCallOutput(
                     id=_generate_id("msg"),
                     call_id=tool.call_id,
@@ -624,9 +638,12 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             response.tool_choice if response and response.tool_choice else runtime_config.session.tool_choice
         )
         # Inject server-side tool definitions so the model can call them
-        from speech_to_speech.LLM.server_side_tools import get_server_side_tool_definitions
-
-        server_tool_defs = get_server_side_tool_definitions()
+        _mcp = getattr(self, "_mcp_manager", None)
+        if _mcp is not None:
+            server_tool_defs = _mcp.get_tool_definitions()
+        else:
+            from speech_to_speech.LLM.server_side_tools import get_server_side_tool_definitions
+            server_tool_defs = get_server_side_tool_definitions()
         if server_tool_defs:
             req_tools = list(req_tools) + server_tool_defs if req_tools else list(server_tool_defs)
         wants_audio = response_wants_audio(response)
