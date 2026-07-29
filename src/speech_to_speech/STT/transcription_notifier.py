@@ -38,6 +38,8 @@ class TranscriptionNotifier(BaseHandler[STTOut, Union[STTOut, LLMIn]]):
         self.text_output_queue = text_output_queue
         self.runtime_config = runtime_config
         self.should_listen = should_listen
+        self._current_turn_id: str | None = None
+        self._current_user_item_id: str | None = None
 
     def process(self, transcription: STTOut) -> Iterator[Union[STTOut, LLMIn]]:
         if isinstance(transcription, PartialTranscription):
@@ -93,7 +95,15 @@ class TranscriptionNotifier(BaseHandler[STTOut, Union[STTOut, LLMIn]]):
             logger.info("Transcription completed: %s", transcript)
 
         if self.runtime_config is not None:
-            self.runtime_config.chat.add_item(make_user_message(transcript))
+            chat = self.runtime_config.chat
+            if turn_id is not None and turn_id == self._current_turn_id:
+                if not chat.replace_user_message_text(self._current_user_item_id, transcript):
+                    item = chat.add_item(make_user_message(transcript))
+                    self._current_user_item_id = item.id
+            else:
+                item = chat.add_item(make_user_message(transcript))
+                self._current_turn_id = turn_id
+                self._current_user_item_id = item.id
             yield GenerateResponseRequest(
                 runtime_config=self.runtime_config,
                 language_code=language_code,
@@ -101,3 +111,7 @@ class TranscriptionNotifier(BaseHandler[STTOut, Union[STTOut, LLMIn]]):
                 turn_revision=turn_revision,
                 speech_stopped_at_s=speech_stopped_at_s,
             )
+
+    def on_session_end(self) -> None:
+        self._current_turn_id = None
+        self._current_user_item_id = None

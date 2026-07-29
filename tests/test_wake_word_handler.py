@@ -54,7 +54,7 @@ def test_sleeping_does_not_forward_bytes():
     handler._preroll_chunks = 5
     handler._threshold = 0.5
     handler._activation_timeout_s = 30.0
-    handler._last_forward_time = 0.0
+    handler._activation_start_time = 0.0
     handler._model = _mock_model(score=0.1)
 
     chunk = b"\x00" * 1024
@@ -70,7 +70,7 @@ def test_active_forwards_bytes():
     handler._preroll_chunks = 5
     handler._threshold = 0.5
     handler._activation_timeout_s = 30.0
-    handler._last_forward_time = time.monotonic()
+    handler._activation_start_time = time.monotonic()
 
     chunk = b"\x00" * 1024
     results = list(handler.process(chunk))
@@ -84,7 +84,7 @@ def test_active_timeout_goes_to_sleep():
     handler._preroll_chunks = 5
     handler._threshold = 0.5
     handler._activation_timeout_s = 0.0
-    handler._last_forward_time = 0.0
+    handler._activation_start_time = 0.0
 
     chunk = b"\x00" * 1024
     results = list(handler.process(chunk))
@@ -104,7 +104,7 @@ def test_wake_word_handler_gates_audio_downstream():
     handler._preroll_chunks = 5
     handler._threshold = 0.5
     handler._activation_timeout_s = 30.0
-    handler._last_forward_time = 0.0
+    handler._activation_start_time = 0.0
     handler._model = _mock_model(score=0.1)
     chunk = b"\x00" * 1024
     results = list(handler.process(chunk))
@@ -119,7 +119,7 @@ def test_wake_handler_plays_chime_on_detection():
     handler._preroll_chunks = 5
     handler._threshold = 0.0
     handler._activation_timeout_s = 30.0
-    handler._last_forward_time = 0.0
+    handler._activation_start_time = 0.0
     handler._cooldown_until = 0.0
     handler._model = _mock_model(score=0.9)
     handler._should_listen = None
@@ -141,7 +141,7 @@ def test_wake_handler_no_chime_when_not_configured():
     handler._preroll_chunks = 5
     handler._threshold = 0.0
     handler._activation_timeout_s = 30.0
-    handler._last_forward_time = 0.0
+    handler._activation_start_time = 0.0
     handler._cooldown_until = 0.0
     handler._model = _mock_model(score=0.9)
     handler._should_listen = None
@@ -160,7 +160,7 @@ def test_wake_handler_chime_with_buffered_audio():
     handler._preroll_chunks = 5
     handler._threshold = 0.0
     handler._activation_timeout_s = 30.0
-    handler._last_forward_time = 0.0
+    handler._activation_start_time = 0.0
     handler._cooldown_until = 0.0
     handler._model = _mock_model(score=0.9)
     handler._should_listen = None

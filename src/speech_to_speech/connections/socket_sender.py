@@ -25,12 +25,14 @@ class SocketSender:
         stop_event: Event,
         queue_in: Queue[AudioOutItem],
         should_listen: Event,
+        response_done_event: Event | None = None,
         host: str = "0.0.0.0",
         port: int = 12346,
     ) -> None:
         self.stop_event = stop_event
         self.queue_in = queue_in
         self.should_listen = should_listen
+        self._response_done_event = response_done_event
         self.host = host
         self.port = port
 
@@ -52,6 +54,8 @@ class SocketSender:
                 continue
             if isinstance(audio_chunk, bytes) and audio_chunk == AUDIO_RESPONSE_DONE:
                 self.should_listen.set()
+                if self._response_done_event is not None:
+                    self._response_done_event.set()
                 continue
             payload: bytes
             if isinstance(audio_chunk, bytes):

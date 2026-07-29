@@ -345,6 +345,7 @@ def initialize_queues_and_events() -> dict[str, Any]:
     return {
         "stop_event": Event(),
         "should_listen": Event(),
+        "response_done_event": Event(),
         "response_playing": Event(),
         "cancel_scope": CancelScope(),
         "recv_audio_chunks_queue": Queue[AudioInItem](),
@@ -387,6 +388,7 @@ def _build_pipeline_handlers(
     qwen3_tts_handler_kwargs: Qwen3TTSHandlerArguments,
     speculative_turns: SpeculativeTurnTracker | None = None,
     wake_word_handler_kwargs: WakeWordHandlerArguments | None = None,
+    response_done_event: Event | None = None,
 ) -> list[Any]:
     """Build the shared handler chain: VAD → STT → TranscriptionNotifier → LM → LMOutputProcessor → TTS.
 
@@ -420,6 +422,8 @@ def _build_pipeline_handlers(
             ww_setup["wake_chime_bytes"] = wake_word_chime
             ww_setup["chime_output_queue"] = send_audio_chunks_queue
         ww_setup["should_listen"] = should_listen
+        if response_done_event is not None:
+            ww_setup["response_done_event"] = response_done_event
         wake_word = WakeWordHandler(
             stop_event,
             queue_in=recv_audio_chunks_queue,
@@ -558,6 +562,7 @@ def _build_realtime_pipeline_unit(
 
     should_listen = Event()
     response_playing = Event()
+    response_done_event = Event()
     cancel_scope = CancelScope()
     speculative_turns = SpeculativeTurnTracker()
     recv_audio_chunks_queue: Queue[AudioInItem] = Queue()
@@ -630,6 +635,7 @@ def _build_realtime_pipeline_unit(
         qwen3_tts_handler_kwargs=qwen3_tts_kw,
         speculative_turns=speculative_turns,
         wake_word_handler_kwargs=wake_word_handler_kwargs,
+        response_done_event=response_done_event,
     )
     for h in handlers:
         h.pipeline_index = index
@@ -671,6 +677,7 @@ def build_pipeline(
 ) -> ThreadManager:
     stop_event = queues_and_events["stop_event"]
     should_listen = queues_and_events["should_listen"]
+    response_done_event = queues_and_events["response_done_event"]
     recv_audio_chunks_queue = queues_and_events["recv_audio_chunks_queue"]
     send_audio_chunks_queue = queues_and_events["send_audio_chunks_queue"]
     spoken_prompt_queue = queues_and_events["spoken_prompt_queue"]
@@ -690,6 +697,7 @@ def build_pipeline(
             input_queue=recv_audio_chunks_queue,
             output_queue=send_audio_chunks_queue,
             should_listen=should_listen,
+            response_done_event=response_done_event,
         )
         comms_handlers = [local_audio_streamer]
         should_listen.set()
@@ -703,6 +711,7 @@ def build_pipeline(
             output_queue=send_audio_chunks_queue,
             should_listen=should_listen,
             text_output_queue=text_output_queue,
+            response_done_event=response_done_event,
             host=websocket_streamer_kwargs.ws_host,
             port=websocket_streamer_kwargs.ws_port,
         )
@@ -762,6 +771,7 @@ def build_pipeline(
                 stop_event,
                 send_audio_chunks_queue,
                 should_listen,
+                response_done_event=response_done_event,
                 host=socket_sender_kwargs.send_host,
                 port=socket_sender_kwargs.send_port,
             ),
@@ -815,6 +825,7 @@ def build_pipeline(
         kokoro_tts_handler_kwargs=kokoro_tts_handler_kwargs,
         qwen3_tts_handler_kwargs=qwen3_tts_handler_kwargs,
         wake_word_handler_kwargs=wake_word_handler_kwargs,
+        response_done_event=response_done_event,
     )
 
     return ThreadManager([*comms_handlers, *pipeline_handlers])

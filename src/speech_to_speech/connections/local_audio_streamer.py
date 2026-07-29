@@ -19,6 +19,7 @@ class LocalAudioStreamer:
         input_queue: Queue[AudioInItem],
         output_queue: Queue[AudioOutItem],
         should_listen: threading.Event,
+        response_done_event: threading.Event | None = None,
         list_play_chunk_size: int = 512,
     ) -> None:
         self.list_play_chunk_size = list_play_chunk_size
@@ -27,6 +28,7 @@ class LocalAudioStreamer:
         self.input_queue = input_queue
         self.output_queue = output_queue
         self.should_listen = should_listen
+        self._response_done_event = response_done_event
         self._pcm_buffer = deque()
 
     def _next_pcm_frame(self, frames: int) -> np.ndarray:
@@ -79,6 +81,8 @@ class LocalAudioStreamer:
                     chunk = self.output_queue.get_nowait()
                     if chunk is AUDIO_RESPONSE_DONE:
                         self.should_listen.set()
+                        if self._response_done_event is not None:
+                            self._response_done_event.set()
                         logger.debug("Response complete, listening re-enabled")
                     else:
                         self._consume_chunk(chunk)

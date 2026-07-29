@@ -99,6 +99,11 @@ whisper-mlx = [
     "lightning-whisper-mlx>=0.0.10; platform_system == 'Darwin'",
 ]
 
+client = [
+    "sounddevice>=0.5.0",
+    "websockets>=12.0",
+]
+
 [project.urls]
 Homepage = "https://github.com/huggingface/speech-to-speech"
 Repository = "https://github.com/huggingface/speech-to-speech"
@@ -106,6 +111,7 @@ Issues = "https://github.com/huggingface/speech-to-speech/issues"
 
 [project.scripts]
 speech-to-speech = "speech_to_speech.s2s_pipeline:main"
+speech-to-speech-client = "speech_to_speech.client:main"
 
 [dependency-groups]
 dev = [

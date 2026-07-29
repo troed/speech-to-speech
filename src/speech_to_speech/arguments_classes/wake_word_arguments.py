@@ -16,9 +16,9 @@ class WakeWordHandlerArguments:
         },
     )
     activation_timeout_s: float = field(
-        default=30.0,
+        default=10.0,
         metadata={
-            "help": "Seconds of silence before the handler goes back to sleep after wake word activation."
+            "help": "Seconds of inactivity after the last response finishes before requiring a new wake word activation."
         },
     )
     preroll_ms: int = field(

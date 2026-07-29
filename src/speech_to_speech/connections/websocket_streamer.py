@@ -32,6 +32,7 @@ class WebSocketStreamer:
         output_queue: Queue[AudioOutItem],
         should_listen: Event,
         text_output_queue: Queue[TextEventItem] | None = None,
+        response_done_event: Event | None = None,
         host: str = "0.0.0.0",
         port: int = 8765,
     ) -> None:
@@ -40,6 +41,7 @@ class WebSocketStreamer:
         self.output_queue = output_queue  # TTS -> clients
         self.text_output_queue = text_output_queue  # Text messages -> clients
         self.should_listen = should_listen
+        self._response_done_event = response_done_event
         self.host = host
         self.port = port
         self.clients: set[ServerConnection] = set()
@@ -178,6 +180,8 @@ class WebSocketStreamer:
                                 return_exceptions=True,
                             )
                         self.should_listen.set()
+                        if self._response_done_event is not None:
+                            self._response_done_event.set()
                         logger.debug("Response complete, listening re-enabled")
                         continue
                     if is_control_message(audio_chunk, SESSION_END.kind):
