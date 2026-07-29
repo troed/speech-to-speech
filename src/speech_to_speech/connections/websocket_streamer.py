@@ -156,6 +156,7 @@ class WebSocketStreamer:
         # Buffer audio until we have at least 100ms worth (3200 bytes = 1600 samples at 16kHz int16)
         MIN_AUDIO_BYTES = 3200
         audio_buffer = bytearray()
+        response_sending = False
 
         while not self.stop_event.is_set():
             try:
@@ -179,6 +180,7 @@ class WebSocketStreamer:
                                 *[client.send(data) for client in self.clients],
                                 return_exceptions=True,
                             )
+                        response_sending = False
                         self.should_listen.set()
                         if self._response_done_event is not None:
                             self._response_done_event.set()
@@ -201,6 +203,9 @@ class WebSocketStreamer:
                             chunk_bytes = audio_chunk.tobytes()
                         else:
                             continue
+                        if not response_sending:
+                            response_sending = True
+                            self.should_listen.clear()
                         audio_buffer.extend(chunk_bytes)
 
                         if len(audio_buffer) >= MIN_AUDIO_BYTES:
