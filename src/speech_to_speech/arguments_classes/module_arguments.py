@@ -70,11 +70,11 @@ class ModuleArguments:
             "num_pipelines; further connections are rejected. Only valid for --mode realtime. Default is 1."
         },
     )
-    mcp_url: Optional[str] = field(
-        default=None,
+    mcp_config: Optional[str] = field(
+        default="mcp.json",
         metadata={
-            "help": "URL of the tinysearch MCP server (e.g., http://localhost:8765). "
-            "Default is http://localhost:8765."
+            "help": "Path to mcp.json config file for MCP servers. "
+            "Default is mcp.json in the working directory."
         },
     )
     wake_word_model: Optional[str] = field(
