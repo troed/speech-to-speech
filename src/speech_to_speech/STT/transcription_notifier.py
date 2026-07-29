@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from queue import Queue
 from threading import Event
-from typing import Iterator, Union
+from typing import Any, Iterator, Union
 
 from speech_to_speech.api.openai_realtime.runtime_config import RuntimeConfig
 from speech_to_speech.baseHandler import BaseHandler
@@ -34,10 +34,12 @@ class TranscriptionNotifier(BaseHandler[STTOut, Union[STTOut, LLMIn]]):
         text_output_queue: Queue[TextEventItem] | None = None,
         runtime_config: RuntimeConfig | None = None,
         should_listen: Event | None = None,
+        echo_filter: Any = None,
     ) -> None:
         self.text_output_queue = text_output_queue
         self.runtime_config = runtime_config
         self.should_listen = should_listen
+        self.echo_filter = echo_filter
         self._current_turn_id: str | None = None
         self._current_user_item_id: str | None = None
 
@@ -93,6 +95,12 @@ class TranscriptionNotifier(BaseHandler[STTOut, Union[STTOut, LLMIn]]):
             logger.info("Transcription completed (language=%s): %s", language_code, transcript)
         else:
             logger.info("Transcription completed: %s", transcript)
+
+        if self.echo_filter is not None and self.echo_filter.is_echo(transcript):
+            logger.info("Echo detected, discarding: %s", transcript)
+            if self.should_listen is not None:
+                self.should_listen.set()
+            return
 
         if self.runtime_config is not None:
             chat = self.runtime_config.chat

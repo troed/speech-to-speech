@@ -4,6 +4,7 @@ import logging
 from queue import Empty, Queue
 from threading import Event
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
 from websockets.asyncio.server import ServerConnection
@@ -44,7 +45,8 @@ class WebSocketStreamer:
         self._response_done_event = response_done_event
         self.host = host
         self.port = port
-        self.clients: set[ServerConnection] = set()
+        self._sessions: dict[str, ServerConnection] = {}
+        self._active_session_id: str | None = None
         self.loop: asyncio.AbstractEventLoop | None = None
         self.server: Any = None
 
@@ -89,7 +91,7 @@ class WebSocketStreamer:
             pass
 
         # Close all clients
-        for client in list(self.clients):
+        for client in list(self._sessions.values()):
             try:
                 await client.close()
             except Exception:
@@ -102,12 +104,22 @@ class WebSocketStreamer:
     async def _handle_client(self, websocket: ServerConnection) -> None:
         """Handle a single WebSocket client connection."""
         client_id = id(websocket)
-        logger.info(f"Client {client_id} connected")
-        self.clients.add(websocket)
+        session_id = _extract_session_id(websocket)
+        logger.info("Client %d connected (session=%s)", client_id, session_id)
+
+        if session_id in self._sessions:
+            old_ws = self._sessions[session_id]
+            logger.info("Replacing previous connection for session=%s", session_id)
+            try:
+                await old_ws.close()
+            except Exception:
+                pass
+        self._sessions[session_id] = websocket
+        self._active_session_id = session_id
         recv_buffer = bytearray()
 
         # Enable listening when first client connects
-        if len(self.clients) == 1:
+        if len(self._sessions) == 1:
             # Drain edge queues so stale data from a previous session doesn't
             # leak into the new one (SESSION_END may not have flushed everything).
             for q in (self.output_queue, self.text_output_queue):
@@ -144,10 +156,11 @@ class WebSocketStreamer:
         except Exception as e:
             logger.error(f"Client {client_id} error: {type(e).__name__}: {e}", exc_info=True)
         finally:
-            self.clients.discard(websocket)
-            logger.info(f"Client {client_id} disconnected (finally block)")
+            if self._sessions.get(session_id) is websocket:
+                self._sessions.pop(session_id, None)
+            logger.info(f"Client {client_id} disconnected (finally block) (session={session_id})")
 
-            if len(self.clients) == 0:
+            if not self._sessions:
                 logger.debug("Last WebSocket client disconnected, ending session")
                 self.input_queue.put(SESSION_END)
 
@@ -158,26 +171,29 @@ class WebSocketStreamer:
         audio_buffer = bytearray()
         response_sending = False
 
+        def _active() -> list[ServerConnection]:
+            return list(self._sessions.values())
+
         while not self.stop_event.is_set():
             try:
                 # Check for audio
                 try:
                     audio_chunk = self.output_queue.get_nowait()
                     if isinstance(audio_chunk, bytes) and audio_chunk == PIPELINE_END:
-                        if audio_buffer and self.clients:
+                        if audio_buffer and _active():
                             data = bytes(audio_buffer)
                             audio_buffer.clear()
                             await asyncio.gather(
-                                *[client.send(data) for client in self.clients],
+                                *[client.send(data) for client in _active()],
                                 return_exceptions=True,
                             )
                         break
                     if isinstance(audio_chunk, bytes) and audio_chunk == AUDIO_RESPONSE_DONE:
-                        if audio_buffer and self.clients:
+                        if audio_buffer and _active():
                             data = bytes(audio_buffer)
                             audio_buffer.clear()
                             await asyncio.gather(
-                                *[client.send(data) for client in self.clients],
+                                *[client.send(data) for client in _active()],
                                 return_exceptions=True,
                             )
                         response_sending = False
@@ -193,7 +209,7 @@ class WebSocketStreamer:
                     if isinstance(audio_chunk, PipelineControlMessage):
                         continue
 
-                    if self.clients:
+                    if _active():
                         chunk_bytes: bytes
                         if isinstance(audio_chunk, bytes):
                             chunk_bytes = audio_chunk
@@ -211,27 +227,27 @@ class WebSocketStreamer:
                         if len(audio_buffer) >= MIN_AUDIO_BYTES:
                             data = bytes(audio_buffer)
                             audio_buffer.clear()
-                            logger.debug(f"Sending {len(data)} bytes of audio to {len(self.clients)} client(s)")
+                            logger.debug(f"Sending {len(data)} bytes of audio to {len(_active())} client(s)")
                             await asyncio.gather(
-                                *[client.send(data) for client in self.clients], return_exceptions=True
+                                *[client.send(data) for client in _active()], return_exceptions=True
                             )
                 except Empty:
                     # Flush any buffered audio when queue is empty
-                    if audio_buffer and self.clients:
+                    if audio_buffer and _active():
                         data = bytes(audio_buffer)
                         audio_buffer.clear()
-                        logger.debug(f"Flushing {len(data)} bytes of audio to {len(self.clients)} client(s)")
-                        await asyncio.gather(*[client.send(data) for client in self.clients], return_exceptions=True)
+                        logger.debug(f"Flushing {len(data)} bytes of audio to {len(_active())} client(s)")
+                        await asyncio.gather(*[client.send(data) for client in _active()], return_exceptions=True)
 
                 # Check for text/tool messages
                 if self.text_output_queue:
                     try:
                         text_message = self.text_output_queue.get_nowait()
-                        if self.clients:
+                        if _active():
                             if isinstance(text_message, PipelineEvent):
                                 payload = text_message.model_dump()
                                 await asyncio.gather(
-                                    *[client.send(json.dumps(payload)) for client in self.clients],
+                                    *[client.send(json.dumps(payload)) for client in _active()],
                                     return_exceptions=True,
                                 )
                             elif isinstance(text_message, (PipelineControlMessage, bytes)):
@@ -245,3 +261,15 @@ class WebSocketStreamer:
                 break
             except Exception as e:
                 logger.error(f"Send loop error: {e}")
+
+
+def _extract_session_id(websocket: ServerConnection) -> str:
+    path = getattr(websocket, "request", None)
+    if path is not None:
+        path_str = getattr(path, "path", "")
+    else:
+        path_str = ""
+    parsed = urlsplit(path_str)
+    params = parse_qs(parsed.query)
+    session_ids = params.get("session_id", [])
+    return session_ids[0] if session_ids else ""

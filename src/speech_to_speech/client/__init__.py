@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 import wave
 from queue import Empty, Queue
 from threading import Event, Thread
@@ -237,7 +238,7 @@ async def websocket_client(
     import websockets.exceptions
     from websockets.asyncio.client import connect
 
-    url = f"ws://{host}:{port}"
+    url = f"ws://{host}:{port}?session_id={uuid.uuid4().hex}"
     live_user_width = 0
     response_active = False
     last_recv_audio: float = 0.0

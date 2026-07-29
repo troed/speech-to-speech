@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator
 from queue import Queue
+from typing import Any
 
 from speech_to_speech.baseHandler import BaseHandler
 from speech_to_speech.LLM.server_side_tools import is_server_side_tool
@@ -39,6 +40,7 @@ class LMOutputProcessor(BaseHandler[LLMOut, TTSIn]):
         speculative_turns: SpeculativeTurnTracker | None = None,
         search_chime_bytes: bytes | None = None,
         chime_output_queue: Queue | None = None,
+        echo_filter: Any = None,
     ) -> None:
         """
         Initialize the processor.
@@ -50,6 +52,7 @@ class LMOutputProcessor(BaseHandler[LLMOut, TTSIn]):
         self.speculative_turns = speculative_turns
         self._search_chime_bytes = search_chime_bytes
         self._chime_output_queue = chime_output_queue
+        self._echo_filter = echo_filter
         self._awaiting_search_result = False
 
     def _turn_output_allowed(self, turn_id: str | None, turn_revision: int | None) -> bool:
@@ -135,6 +138,8 @@ class LMOutputProcessor(BaseHandler[LLMOut, TTSIn]):
                     except Exception:
                         pass
                     self._awaiting_search_result = False
+            if self._echo_filter is not None:
+                self._echo_filter.record(lm_output.text)
             yield TTSInput(
                 text=lm_output.text,
                 language_code=lm_output.language_code,

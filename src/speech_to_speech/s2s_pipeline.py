@@ -53,6 +53,7 @@ from speech_to_speech.arguments_classes.whisper_stt_arguments import WhisperSTTH
 from speech_to_speech.baseHandler import BaseHandler
 from speech_to_speech.LLM.chat import Chat
 from speech_to_speech.pipeline.cancel_scope import CancelScope
+from speech_to_speech.pipeline.echo_filter import EchoFilter
 from speech_to_speech.pipeline.handler_types import LLMIn, LLMOut, STTIn, STTOut, TTSIn, TTSOut
 from speech_to_speech.pipeline.queue_types import (
     AudioInItem,
@@ -389,6 +390,7 @@ def _build_pipeline_handlers(
     speculative_turns: SpeculativeTurnTracker | None = None,
     wake_word_handler_kwargs: WakeWordHandlerArguments | None = None,
     response_done_event: Event | None = None,
+    echo_filter: EchoFilter | None = None,
 ) -> list[Any]:
     """Build the shared handler chain: VAD → STT → TranscriptionNotifier → LM → LMOutputProcessor → TTS.
 
@@ -487,6 +489,7 @@ def _build_pipeline_handlers(
     processor_kwargs: dict[str, Any] = {
         "text_output_queue": text_output_queue,
         "speculative_turns": speculative_turns,
+        "echo_filter": echo_filter,
     }
     if search_chime is not None:
         processor_kwargs["search_chime_bytes"] = search_chime
@@ -786,9 +789,12 @@ def build_pipeline(
         _lm_vars = vars(responses_api_language_model_handler_kwargs)
     else:
         _lm_vars = vars(language_model_handler_kwargs)
+    echo_filter = EchoFilter()
+
     transcription_notifier_setup: dict[str, Any] = {
         "text_output_queue": text_output_queue,
         "should_listen": should_listen,
+        "echo_filter": echo_filter,
         "runtime_config": RuntimeConfig(
             chat=Chat(_lm_vars.get("chat_size", 30)),
             session=RealtimeSessionCreateRequest(
@@ -810,6 +816,7 @@ def build_pipeline(
         send_audio_chunks_queue=send_audio_chunks_queue,
         text_output_queue=text_output_queue,
         transcription_notifier_setup=transcription_notifier_setup,
+        echo_filter=echo_filter,
         module_kwargs=module_kwargs,
         vad_handler_kwargs=vad_handler_kwargs,
         whisper_stt_handler_kwargs=whisper_stt_handler_kwargs,
