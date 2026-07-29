@@ -44,6 +44,47 @@ class MCPClientManager:
                 continue
             self._servers[name] = cfg
 
+    def _register_tool(
+        self, tool_name: str, server_name: str, definition: dict[str, Any]
+    ) -> None:
+        """Register a tool and its definition, handling namespace collisions."""
+        if tool_name in self._tool_to_server:
+            existing = self._tool_to_server[tool_name]
+            logger.warning(
+                "Tool '%s' from server '%s' already registered from server '%s'",
+                tool_name,
+                server_name,
+                existing,
+            )
+            for i, d in enumerate(self._tool_definitions):
+                if d["name"] == tool_name:
+                    self._tool_definitions[i] = definition
+                    break
+        else:
+            self._tool_definitions.append(definition)
+        self._tool_to_server[tool_name] = server_name
+
+    def is_server_side_tool(self, tool_name: str) -> bool:
+        return tool_name in self._tool_to_server
+
+    def get_tool_definitions(self) -> list[dict[str, Any]]:
+        return list(self._tool_definitions)
+
+    def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> str:
+        import asyncio
+        server_name = self._tool_to_server.get(tool_name)
+        if server_name is None:
+            raise ValueError(f"Unknown tool: {tool_name}")
+        client = self._clients.get(server_name)
+        if client is None:
+            raise RuntimeError(f"No client for server '{server_name}'")
+        result = asyncio.run(client.call_tool(tool_name, arguments))
+        return "\n".join(
+            block.text
+            for block in result.content
+            if isinstance(block, TextContent)
+        )
+
     @property
     def server_count(self) -> int:
         return len(self._servers)
