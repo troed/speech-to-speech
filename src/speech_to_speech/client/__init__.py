@@ -242,6 +242,7 @@ async def websocket_client(
     live_user_width = 0
     response_active = False
     last_recv_audio: float = 0.0
+    grace_deadline: float = 0.0
 
     def render_user(text: str, final: bool = False) -> None:
         nonlocal live_user_width
@@ -267,9 +268,13 @@ async def websocket_client(
             except Exception:
                 break
 
+    def _extend_grace() -> None:
+        nonlocal grace_deadline
+        if grace_deadline > 0:
+            grace_deadline = time.monotonic() + wake_inactivity_timeout
+
     async def send_audio(ws: Any) -> None:
-        nonlocal response_active
-        grace_deadline: float = 0.0
+        nonlocal response_active, grace_deadline
         while not stop_event.is_set():
             if wake_event is not None:
                 if not wake_event.is_set():
@@ -298,7 +303,7 @@ async def websocket_client(
                 await ws.send(chunk)
 
     async def receive_audio(ws: Any) -> None:
-        nonlocal last_recv_audio, response_active
+        nonlocal last_recv_audio, response_active, grace_deadline
         while not stop_event.is_set():
             try:
                 message = await asyncio.wait_for(ws.recv(), timeout=0.5)
@@ -324,15 +329,19 @@ async def websocket_client(
                 except json.JSONDecodeError:
                     continue
 
-                tag = event.get("tag", "")
+                tag = event.get("tag") or event.get("type", "")
                 if tag == "partial_transcription":
                     text = event.get("delta", "")
                     if text:
                         render_user(text)
+                    _extend_grace()
                 elif tag == "transcription_completed":
                     text = event.get("transcript", "")
                     if text:
                         render_user(text, final=True)
+                    _extend_grace()
+                elif tag == "speech_started":
+                    _extend_grace()
                 elif tag == "assistant_text":
                     clear_live()
                     print(f"ASSISTANT: {event.get('text', '')}", flush=True)
