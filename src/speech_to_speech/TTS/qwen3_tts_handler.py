@@ -147,6 +147,8 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
             self.backend = "faster_qwen3_tts"
             self.streaming_chunk_size = self._resolve_streaming_chunk_size(streaming_chunk_size)
             self.faster_backend = self._normalize_faster_backend(backend)
+            self.model_name = model_name
+            self.device = device
             logger.info("Qwen3TTSHandler using shared TTS model")
             self._initial_speaker = self.speaker
             self._initial_ref_audio = self.ref_audio
