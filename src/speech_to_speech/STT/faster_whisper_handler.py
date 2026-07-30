@@ -27,8 +27,15 @@ class FasterWhisperSTTHandler(BaseSTTHandler):
         device: str = "auto",
         compute_type: str = "auto",
         gen_kwargs: dict[str, Any] = {},
+        _shared_stt_model: Any = None,
     ) -> None:
         self.gen_kwargs = self.adapt_gen_kwargs(gen_kwargs)
+
+        if _shared_stt_model is not None:
+            self.model = _shared_stt_model
+            self._model_loaded_externally = True
+            logger.info("FasterWhisperSTTHandler using shared STT model")
+            return
 
         os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
         self.model = WhisperModel(model_name, device=device, compute_type=compute_type)
@@ -63,7 +70,8 @@ class FasterWhisperSTTHandler(BaseSTTHandler):
 
     def cleanup(self) -> None:
         print("Stopping FasterWhisperSTTHandler")
-        del self.model
+        if not getattr(self, "_model_loaded_externally", False):
+            del self.model
 
     def adapt_gen_kwargs(self, gen_kwargs: dict[str, Any]) -> dict[str, Any]:
         return_timestamps = gen_kwargs.pop("return_timestamps", False)

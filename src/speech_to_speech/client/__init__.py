@@ -1,7 +1,7 @@
-"""CLI client for speech-to-speech WebSocket mode.
+"""CLI client for speech-to-speech OpenAI Realtime API mode.
 
 Usage:
-  speech-to-speech-client --host 192.168.0.2 --port 8765
+  speech-to-speech-client --host 192.168.0.2 --port 8766
   speech-to-speech-client --wake-word-model computer.onnx
 """
 
@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import logging
 import time
-import uuid
 import wave
 from queue import Empty, Queue
 from threading import Event, Thread
@@ -24,6 +24,75 @@ import sounddevice as sd
 logger = logging.getLogger(__name__)
 
 PIPELINE_RATE = 16000
+
+
+def _encode_input_audio(chunk: bytes) -> dict[str, Any]:
+    return {
+        "type": "input_audio_buffer.append",
+        "audio": base64.b64encode(chunk).decode("ascii"),
+    }
+
+
+def _decode_output_audio(event: dict[str, Any]) -> bytes | None:
+    if event.get("type") != "response.output_audio.delta":
+        return None
+    b64 = event.get("delta")
+    if not b64:
+        return None
+    return base64.b64decode(b64)
+
+
+def _parse_realtime_text_event(event: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(event, dict):
+        return None
+    event_type = event.get("type", "")
+
+    if event_type == "conversation.item.input_audio_transcription.delta":
+        return {"kind": "partial_transcription", "delta": event.get("delta", "")}
+
+    if event_type == "conversation.item.input_audio_transcription.completed":
+        return {"kind": "transcription_completed", "transcript": event.get("transcript", "")}
+
+    if event_type == "input_audio_buffer.speech_started":
+        return {"kind": "speech_started"}
+
+    if event_type == "response.output_audio_transcript.done":
+        return {"kind": "assistant_text", "text": event.get("transcript", "")}
+
+    if event_type == "response.done":
+        resp = event.get("response", {})
+        status = resp.get("status", "")
+        if status == "failed":
+            error_msg = ((resp.get("status_details") or {}).get("error") or {}).get("message", "Unknown error")
+            return {"kind": "response_failed", "error": error_msg}
+        if status == "completed":
+            result: dict[str, Any] = {"kind": "response_done"}
+            usage = resp.get("usage")
+            if usage:
+                result["input_tokens"] = usage.get("input_tokens", 0)
+                result["output_tokens"] = usage.get("output_tokens", 0)
+            return result
+        return {"kind": "response_done"}
+
+    return None
+
+
+def _build_session_update(
+    voice: str | None = None,
+    instructions: str | None = None,
+) -> dict[str, Any]:
+    session: dict[str, Any] = {
+        "audio": {
+            "output": {"format": {"type": "pcm16", "rate": 16000}},
+        },
+        "output_modalities": ["audio", "text"],
+        "turn_detection": {"type": "server_vad"},
+    }
+    if voice is not None:
+        session["voice"] = voice
+    if instructions is not None:
+        session["instructions"] = instructions
+    return {"type": "session.update", "session": session}
 
 
 def _load_wav(path: str) -> bytes | None:
@@ -238,7 +307,7 @@ async def websocket_client(
     import websockets.exceptions
     from websockets.asyncio.client import connect
 
-    url = f"ws://{host}:{port}?session_id={uuid.uuid4().hex}"
+    url = f"ws://{host}:{port}/v1/realtime"
     live_user_width = 0
     response_active = False
     last_recv_audio: float = 0.0
@@ -274,7 +343,7 @@ async def websocket_client(
             grace_deadline = time.monotonic() + wake_inactivity_timeout
 
     async def send_audio(ws: Any) -> None:
-        nonlocal response_active, grace_deadline
+        nonlocal grace_deadline
         while not stop_event.is_set():
             if wake_event is not None:
                 if not wake_event.is_set():
@@ -282,7 +351,6 @@ async def websocket_client(
                     continue
 
                 if response_active and time.monotonic() - last_recv_audio > 1.5 and speaker_queue.empty():
-                    response_active = False
                     grace_deadline = time.monotonic() + wake_inactivity_timeout
                     logger.info("Response complete, %ss grace period", wake_inactivity_timeout)
                     continue
@@ -300,7 +368,8 @@ async def websocket_client(
                 continue
 
             if wake_event is None or wake_event.is_set():
-                await ws.send(chunk)
+                event = _encode_input_audio(chunk)
+                await ws.send(json.dumps(event))
 
     async def receive_audio(ws: Any) -> None:
         nonlocal last_recv_audio, response_active, grace_deadline
@@ -317,54 +386,66 @@ async def websocket_client(
             if isinstance(message, bytes):
                 speaker_queue.put_nowait(message)
                 last_recv_audio = time.monotonic()
+                continue
+
+            try:
+                event = json.loads(message)
+            except json.JSONDecodeError:
+                continue
+
+            audio = _decode_output_audio(event)
+            if audio is not None:
+                speaker_queue.put_nowait(audio)
+                last_recv_audio = time.monotonic()
                 if not response_active:
                     response_active = True
-                # Server is actively responding — keep the session alive
-                # so the conversation doesn't drop on grace-period expiry.
                 if wake_event is not None and not wake_event.is_set():
                     wake_event.set()
-            else:
-                try:
-                    event = json.loads(message)
-                except json.JSONDecodeError:
-                    continue
+                continue
 
-                tag = event.get("tag") or event.get("type", "")
-                if tag == "partial_transcription":
-                    text = event.get("delta", "")
-                    if text:
-                        render_user(text)
-                    _extend_grace()
-                elif tag == "transcription_completed":
-                    text = event.get("transcript", "")
-                    if text:
-                        render_user(text, final=True)
-                    _extend_grace()
-                elif tag == "speech_started":
-                    _extend_grace()
-                elif tag == "assistant_text":
-                    clear_live()
-                    print(f"ASSISTANT: {event.get('text', '')}", flush=True)
-                elif tag == "token_usage":
+            parsed = _parse_realtime_text_event(event)
+            if parsed is None:
+                continue
+
+            kind = parsed["kind"]
+            if kind == "partial_transcription":
+                text = parsed.get("delta", "")
+                if text:
+                    render_user(text)
+                _extend_grace()
+            elif kind == "transcription_completed":
+                text = parsed.get("transcript", "")
+                if text:
+                    render_user(text, final=True)
+                _extend_grace()
+            elif kind == "speech_started":
+                _extend_grace()
+            elif kind == "assistant_text":
+                clear_live()
+                print(f"ASSISTANT: {parsed.get('text', '')}", flush=True)
+            elif kind == "response_failed":
+                clear_live()
+                print(f"ERROR: {parsed.get('error', 'Unknown error')}", flush=True)
+            elif kind == "response_done":
+                if "input_tokens" in parsed:
                     logger.debug(
                         "Tokens: %d in / %d out",
-                        event.get("input_tokens", 0),
-                        event.get("output_tokens", 0),
+                        parsed.get("input_tokens", 0),
+                        parsed.get("output_tokens", 0),
                     )
-                elif tag == "response_failed":
-                    clear_live()
-                    print(f"ERROR: {event.get('error', 'Unknown error')}", flush=True)
+                response_active = False
+            elif kind == "response_done":
+                response_active = False
 
     while not stop_event.is_set():
         try:
             logger.info("Connecting to %s ...", url)
             async with connect(url) as ws:
                 logger.info("Connected")
+                await ws.send(json.dumps(_build_session_update()))
                 clear_live()
                 print("Connected. Press Ctrl+C to stop.", flush=True)
 
-                # Start receive_audio immediately so TTS/data sent during
-                # wake-word wait is buffered and not lost.
                 recv_task = asyncio.create_task(receive_audio(ws))
                 send_task = None
 
@@ -392,7 +473,6 @@ async def websocket_client(
                 logger.info("Retrying in 3 seconds...")
                 await asyncio.sleep(3)
             else:
-                # Wake-word mode: wait for wake to retry
                 logger.info("Waiting for wake word to reconnect...")
                 wake_event.clear()
                 while not wake_event.is_set() and not stop_event.is_set():
@@ -404,7 +484,7 @@ async def websocket_client(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Speech-to-speech CLI client (WebSocket mode)")
     parser.add_argument("--host", default="127.0.0.1", help="Server host")
-    parser.add_argument("--port", type=int, default=8765, help="Server WebSocket port")
+    parser.add_argument("--port", type=int, default=8766, help="Server WebSocket port (realtime API)")
     parser.add_argument("--sample-rate", type=int, default=16000, help="Audio sample rate")
     parser.add_argument("--chunk-size", type=int, default=512, help="Audio chunk size (samples)")
     parser.add_argument("--input-device", type=int, default=None, help="sounddevice input device index")

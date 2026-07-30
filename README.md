@@ -29,6 +29,14 @@
 
 ## Usage
 
+### VRAM requirements
+
+It's possible to run the whole stack on a GPU with 12GB of VRAM. 
+
+* faster-whisper tiny.en
+* Qwen3-TTS Q8\_0
+* Gemma4 12B QAT
+
 ### Model Setup
 
 The pipeline uses several models (STT, VAD, TTS). These are **never auto-downloaded** — all network access is blocked at startup. There are two ways to get them:

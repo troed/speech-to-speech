@@ -99,6 +99,7 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         wake_chime_bytes: bytes | None = None,
         chime_output_queue: Queue | None = None,
         echo_reference_queue: Queue | None = None,
+        _shared_vad_model: Any = None,
     ) -> None:
         self.should_listen = should_listen
         self.sample_rate = sample_rate
@@ -118,25 +119,29 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         self.short_segment_merge_ms = max(0, short_segment_merge_ms)
         self._last_turn_detection: dict | None = None
 
-        # Load cached VAD model (no network — warn and use default if missing).
-        _vad_cache = torch.hub.get_dir()
-        _vad_cached = (
-            any(d.startswith("snakers4_silero-vad") for d in os.listdir(_vad_cache))
-            if os.path.isdir(_vad_cache)
-            else False
-        )
-        if not _vad_cached:
-            logger.warning(
-                "Silero VAD model not cached in %s — download it once with:\n"
-                "  python3 -c \"import torch; torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True)\"",
-                _vad_cache,
+        if _shared_vad_model is not None:
+            self.model = _shared_vad_model
+            logger.info("VADHandler using shared VAD model")
+        else:
+            # Load cached VAD model (no network — warn and use default if missing).
+            _vad_cache = torch.hub.get_dir()
+            _vad_cached = (
+                any(d.startswith("snakers4_silero-vad") for d in os.listdir(_vad_cache))
+                if os.path.isdir(_vad_cache)
+                else False
             )
-        self.model, _ = torch.hub.load(
-            "snakers4/silero-vad",
-            "silero_vad",
-            trust_repo=True,
-            skip_validation=True,
-        )
+            if not _vad_cached:
+                logger.warning(
+                    "Silero VAD model not cached in %s — download it once with:\n"
+                    "  python3 -c \"import torch; torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True)\"",
+                    _vad_cache,
+                )
+            self.model, _ = torch.hub.load(
+                "snakers4/silero-vad",
+                "silero_vad",
+                trust_repo=True,
+                skip_validation=True,
+            )
         self.iterator = VADIterator(
             self.model,
             threshold=thresh,
