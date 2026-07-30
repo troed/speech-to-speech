@@ -71,7 +71,6 @@ from speech_to_speech.STT.transcription_notifier import TranscriptionNotifier
 from speech_to_speech.utils.thread_manager import ThreadManager
 from speech_to_speech.VAD.vad_handler import VADHandler
 
-
 # Cache-only NLTK resource check (no network).
 def _ensure_nltk_resource(resource_id: str) -> None:
     _log = logging.getLogger(__name__)
