@@ -96,11 +96,13 @@ class TranscriptionNotifier(BaseHandler[STTOut, Union[STTOut, LLMIn]]):
         else:
             logger.info("Transcription completed: %s", transcript)
 
-        if self.echo_filter is not None and self.echo_filter.is_echo(transcript):
-            logger.info("Echo detected, discarding: %s", transcript)
-            if self.should_listen is not None:
-                self.should_listen.set()
-            return
+        if self.echo_filter is not None:
+            if self.echo_filter.is_echo(transcript):
+                logger.info("Echo detected, discarding: %s", transcript)
+                if self.should_listen is not None:
+                    self.should_listen.set()
+                return
+            self.echo_filter.record(transcript)
 
         if self.runtime_config is not None:
             chat = self.runtime_config.chat
