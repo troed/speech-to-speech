@@ -106,6 +106,7 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
         xvec_only: bool = False,
         parity_mode: bool = False,
         non_streaming_mode: bool | None = True,
+        quant: Optional[str] = None,
         mlx_quantization: Optional[str] = None,
         streaming_chunk_size: int | None = None,
         max_new_tokens: int = DEFAULT_QWEN3_TTS_MAX_NEW_TOKENS,
@@ -127,6 +128,7 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
         self.parity_mode = parity_mode
         self.non_streaming_mode = non_streaming_mode
         self.faster_backend = self._normalize_faster_backend(backend)
+        self.quant = quant
         self.mlx_quantization = self._normalize_mlx_quantization(mlx_quantization)
         self.max_new_tokens = max_new_tokens
         self.blocksize = blocksize
@@ -168,6 +170,7 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
                 dtype=dtype,
                 attn_implementation=attn_implementation,
                 backend=self.faster_backend,
+                quant=self.quant,
             )
 
         logger.info(
@@ -182,7 +185,7 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
 
         self.warmup()
 
-    def _setup_faster(self, model_name: str, dtype: Any, attn_implementation: str, backend: str) -> None:
+    def _setup_faster(self, model_name: str, dtype: Any, attn_implementation: str, backend: str, quant: Optional[str] = None) -> None:
         try:
             import torch
         except ImportError as e:
@@ -209,6 +212,7 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
             dtype=self.dtype,
             attn_implementation=attn_implementation,
             backend=backend,
+            quant=quant,
         )
         logger.info("Qwen3-TTS model loaded")
 

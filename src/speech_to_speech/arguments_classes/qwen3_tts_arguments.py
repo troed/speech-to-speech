@@ -70,6 +70,12 @@ class Qwen3TTSHandlerArguments:
             "help": "Optional override for Qwen3-TTS text prefill behavior. Default is true, which pre-fills the full target text before decode on faster-qwen3-tts. Currently ignored on Apple Silicon because mlx-audio does not expose this yet."
         },
     )
+    qwen3_tts_quant: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "GGML quantization to use with faster-qwen3-tts ggml backend. Options: 'F32', 'BF16', 'Q8_0', 'Q4_K_M'. Ignored when backend is 'torch'. Default is None (library default)."
+        },
+    )
     qwen3_tts_mlx_quantization: Optional[str] = field(
         default="6bit",
         metadata={

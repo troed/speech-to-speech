@@ -111,7 +111,7 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
         """Return a generate fn that calls Chat Completions for compaction."""
         client = self.client
         model_name = self.model_name
-        timeout = self.request_timeout
+        timeout = self.request_timeout_s * 3
         extra_body = self._extra_body
 
         def generate(system: str, user: str) -> str:

@@ -58,7 +58,7 @@ class ResponsesApiModelHandler(BaseOpenAICompatibleHandler):
         """Return a generate fn that calls the Responses API for compaction."""
         client = self.client
         model_name = self.model_name
-        timeout = self.request_timeout
+        timeout = self.request_timeout_s * 3
 
         def generate(system: str, user: str) -> str:
             response = client.responses.create(

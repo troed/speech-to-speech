@@ -123,11 +123,20 @@ class MCPClientManager:
                     for tool in tools_result.tools:
                         overrides = tool_overrides.get(tool.name, {})
                         description = overrides.get("description", tool.description or "")
+                        parameters = tool.input_schema if tool.input_schema else {"type": "object", "properties": {}}
+                        prop_overrides = overrides.get("properties", {})
+                        if prop_overrides:
+                            props = dict(parameters.get("properties", {}))
+                            for prop_name, prop_cfg in prop_overrides.items():
+                                existing = dict(props.get(prop_name, {}))
+                                existing.update(prop_cfg)
+                                props[prop_name] = existing
+                            parameters = {**parameters, "properties": props}
                         definition: dict[str, Any] = {
                             "type": "function",
                             "name": tool.name,
                             "description": description,
-                            "parameters": tool.input_schema if tool.input_schema else {"type": "object", "properties": {}},
+                            "parameters": parameters,
                         }
                         self._register_tool(tool.name, name, definition)
 

@@ -34,6 +34,9 @@ class FasterWhisperSTTHandler(BaseSTTHandler):
         self.model = WhisperModel(model_name, device=device, compute_type=compute_type)
 
     def process(self, vad_audio: STTIn) -> Iterator[STTOut]:
+        if vad_audio.mode != "final":
+            return
+
         logger.debug("infering faster whisper...")
 
         segments, info = self.model.transcribe(vad_audio.audio, **self.gen_kwargs)
@@ -63,6 +66,10 @@ class FasterWhisperSTTHandler(BaseSTTHandler):
         del self.model
 
     def adapt_gen_kwargs(self, gen_kwargs: dict[str, Any]) -> dict[str, Any]:
-        gen_kwargs["without_timestamps"] = not gen_kwargs.pop("return_timestamps", True)
+        return_timestamps = gen_kwargs.pop("return_timestamps", False)
+        if return_timestamps:
+            gen_kwargs["word_timestamps"] = True
+        else:
+            gen_kwargs.pop("without_timestamps", None)
 
         return gen_kwargs
