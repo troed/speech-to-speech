@@ -82,11 +82,14 @@ def _build_session_update(
     instructions: str | None = None,
 ) -> dict[str, Any]:
     session: dict[str, Any] = {
+        "type": "realtime",
         "audio": {
-            "output": {"format": {"type": "pcm16", "rate": 16000}},
+            "input": {
+                "turn_detection": {"type": "server_vad"},
+            },
+            "output": {},
         },
         "output_modalities": ["audio", "text"],
-        "turn_detection": {"type": "server_vad"},
     }
     if voice is not None:
         session["voice"] = voice

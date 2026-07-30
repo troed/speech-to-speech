@@ -159,23 +159,28 @@ class TestBuildSessionUpdate:
         assert result["type"] == "session.update"
         assert "session" in result
 
-    def test_audio_output_format_is_16khz_pcm(self):
-        result = _build_session_update()
-        audio = result["session"]["audio"]
-
-        assert audio["output"]["format"]["type"] == "pcm16"
-        assert audio["output"]["format"]["rate"] == 16000
-
     def test_output_modalities_includes_audio_and_text(self):
         result = _build_session_update()
 
         assert "audio" in result["session"]["output_modalities"]
         assert "text" in result["session"]["output_modalities"]
 
-    def test_turn_detection_is_server_vad(self):
+    def test_audio_config_present_without_explicit_rates(self):
+        result = _build_session_update()
+        audio = result["session"]["audio"]
+
+        assert "input" in audio
+        assert "output" in audio
+
+    def test_session_has_realtime_type(self):
         result = _build_session_update()
 
-        assert result["session"]["turn_detection"]["type"] == "server_vad"
+        assert result["session"]["type"] == "realtime"
+
+    def test_turn_detection_is_server_vad_on_input(self):
+        result = _build_session_update()
+
+        assert result["session"]["audio"]["input"]["turn_detection"]["type"] == "server_vad"
 
     def test_accepts_optional_voice_and_instructions(self):
         result = _build_session_update(voice="computer", instructions="Be a starship computer.")
