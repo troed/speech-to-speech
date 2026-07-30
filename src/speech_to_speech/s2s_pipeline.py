@@ -85,7 +85,7 @@ def _ensure_nltk_resource(resource_id: str) -> None:
         )
 
 _ensure_nltk_resource("tokenizers/punkt_tab")
-_ensure_nltk_resource("tokenizers/averaged_perceptron_tagger_eng")
+_ensure_nltk_resource("taggers/averaged_perceptron_tagger_eng")
 
 # caching allows ~50% compilation time reduction
 # see https://docs.google.com/document/d/1y5CRfMLdwEoF1nTk9q8qEu1mgMUuUtvhklPKJ2emLU8/edit#heading=h.o2asbxsrp1ma
