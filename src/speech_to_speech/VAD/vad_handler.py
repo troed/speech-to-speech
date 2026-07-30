@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -92,6 +93,15 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         self.unanswered_reopen_ms = max(self.speculative_reopen_ms, unanswered_reopen_ms)
         self.short_segment_merge_ms = max(0, short_segment_merge_ms)
         self._last_turn_detection: dict | None = None
+
+        # Load cached VAD model (no network — warn and use default if missing).
+        _vad_cache = os.path.join(torch.hub.get_dir(), "snakers4_silero-vad_main")
+        if not os.path.isdir(_vad_cache):
+            logger.warning(
+                "Silero VAD model not cached at %s — download it once with:\n"
+                "  python3 -c \"import torch; torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True)\"",
+                _vad_cache,
+            )
         self.model, _ = torch.hub.load(
             "snakers4/silero-vad",
             "silero_vad",
