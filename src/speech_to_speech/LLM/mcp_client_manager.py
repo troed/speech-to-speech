@@ -5,9 +5,18 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import mcp
 from mcp_types import TextContent
 
 logger = logging.getLogger(__name__)
+
+
+def _exc_message(exc: BaseException) -> str:
+    """Extract a readable message from an exception, unwrapping ExceptionGroups."""
+    if isinstance(exc, BaseExceptionGroup):
+        inner = exc.exceptions[0] if exc.exceptions else exc
+        return _exc_message(inner)
+    return f"{type(exc).__name__}: {exc}"
 
 
 class MCPClientManager:
@@ -68,6 +77,19 @@ class MCPClientManager:
     def get_tool_definitions(self) -> list[dict[str, Any]]:
         return list(self._tool_definitions)
 
+    def _build_http_client(self, cfg: dict[str, Any]) -> mcp.Client:
+        """Build an MCP Client for an HTTP server, optionally with custom headers."""
+        headers = cfg.get("headers")
+        if headers:
+            from mcp.client.streamable_http import streamable_http_client
+
+            import httpx2
+
+            http_client = httpx2.AsyncClient(headers=headers)
+            transport = streamable_http_client(cfg["url"], http_client=http_client)
+            return mcp.Client(transport)
+        return mcp.Client(cfg["url"])
+
     async def start(self) -> None:
         """Connect to all configured servers, discover tools, then close connections."""
         import mcp
@@ -77,7 +99,7 @@ class MCPClientManager:
             transport_type = cfg["type"]
             try:
                 if transport_type == "http":
-                    client = mcp.Client(cfg["url"])
+                    client = self._build_http_client(cfg)
                 else:
                     params = StdioServerParameters(
                         command=cfg["command"],
@@ -86,7 +108,7 @@ class MCPClientManager:
                     )
                     client = mcp.Client(stdio_client(params))
             except Exception as exc:
-                logger.warning("MCP server '%s': failed to create client: %s", name, exc)
+                logger.warning("MCP server '%s': failed to create client: %s", name, _exc_message(exc))
                 continue
 
             try:
@@ -94,7 +116,7 @@ class MCPClientManager:
                     try:
                         tools_result = await client.list_tools()
                     except Exception as exc:
-                        logger.warning("MCP server '%s': tools/list failed: %s", name, exc)
+                        logger.warning("MCP server '%s': tools/list failed: %s", name, _exc_message(exc))
                         continue
 
                     for tool in tools_result.tools:
@@ -112,7 +134,7 @@ class MCPClientManager:
                         len(tools_result.tools),
                     )
             except Exception as exc:
-                logger.warning("MCP server '%s': connection failed: %s", name, exc)
+                logger.warning("MCP server '%s': connection failed: %s", name, _exc_message(exc))
 
     def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> str:
         import asyncio
@@ -128,7 +150,7 @@ class MCPClientManager:
 
         transport_type = cfg["type"]
         if transport_type == "http":
-            client = mcp.Client(cfg["url"])
+            client = self._build_http_client(cfg)
         else:
             params = StdioServerParameters(
                 command=cfg["command"],
