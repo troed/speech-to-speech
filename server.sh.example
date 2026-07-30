@@ -4,6 +4,7 @@ OPENAI_API_KEY=none speech-to-speech \
   \
   --wake_word_search_chime ready.wav \
   --search_instructions "Keep the results short suitable for spoken instructions. No links or number references to sources. No headlines. No markdown." \
+  --search_status_text "Working." \
   --thresh 0.6 \
   --stt parakeet-tdt \
   --llm_backend responses-api \

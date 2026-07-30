@@ -44,3 +44,10 @@ class LanguageModelBaseArguments:
             "instead of synchronously evicting them. Adds an extra LLM call per compaction. Default is True."
         },
     )
+    search_status_text: str = field(
+        default="Searching",
+        metadata={
+            "help": "Status text to emit when the model is executing server-side tools. "
+            "This text is displayed to the user while tool calls are in flight. Default is 'Searching'."
+        },
+    )

@@ -164,6 +164,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         self._search_chime_bytes: bytes | None = _kwargs.pop("search_chime_bytes", None)
         self._chime_output_queue: Queue | None = _kwargs.pop("chime_output_queue", None)
         self._search_instructions: str | None = _kwargs.pop("search_instructions", None)
+        self._search_status_text: str = _kwargs.pop("search_status_text", "Searching")
         self._mcp_manager: Any = _kwargs.pop("mcp_manager", None)
         self.warmup()
 
@@ -548,7 +549,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("Failed to parse arguments for tool %s: %s", tool.name, tool.arguments)
                     continue
-                yield self._chunk(turn, text="Searching", server_tool_executed=True)
+                yield self._chunk(turn, text=self._search_status_text, server_tool_executed=True)
                 from openai.types.realtime.conversation_item import RealtimeConversationItemFunctionCallOutput
                 from speech_to_speech.utils.utils import _generate_id
 
