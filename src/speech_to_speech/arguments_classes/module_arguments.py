@@ -123,3 +123,25 @@ class ModuleArguments:
             "Example: 'Present results conversationally without listing URLs or numbered sources.'"
         },
     )
+    interrupt_enabled: bool = field(
+        default=True,
+        metadata={
+            "help": "Enable barge-in (interrupt) during TTS playback. When the user speaks while the "
+            "system is talking, TTS output stops, queues are cleared, and the user's speech is "
+            "processed as new input. In local mode with wake word, the wake word is not required."
+        },
+    )
+    interrupt_rms_threshold: float = field(
+        default=0.002,
+        metadata={
+            "help": "RMS energy threshold for detecting barge-in speech during TTS playback. "
+            "Lower values make the system more sensitive to interruptions. Default: 0.002."
+        },
+    )
+    interrupt_preroll_ms: int = field(
+        default=500,
+        metadata={
+            "help": "Milliseconds of audio to retain before the barge-in detection and re-feed "
+            "through VAD to capture the start of the user's utterance. Default: 500."
+        },
+    )

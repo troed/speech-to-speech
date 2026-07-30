@@ -11,7 +11,7 @@ from websockets.asyncio.server import ServerConnection
 
 from speech_to_speech.pipeline.control import SESSION_END, PipelineControlMessage, is_control_message
 from speech_to_speech.pipeline.events import PipelineEvent
-from speech_to_speech.pipeline.messages import AUDIO_RESPONSE_DONE, PIPELINE_END
+from speech_to_speech.pipeline.messages import AUDIO_RESPONSE_DONE, PIPELINE_END, AudioOutput
 from speech_to_speech.pipeline.queue_types import AudioInItem, AudioOutItem, TextEventItem
 
 logger = logging.getLogger(__name__)
@@ -34,6 +34,8 @@ class WebSocketStreamer:
         should_listen: Event,
         text_output_queue: Queue[TextEventItem] | None = None,
         response_done_event: Event | None = None,
+        response_playing: Event | None = None,
+        echo_reference_queue: Queue | None = None,
         host: str = "0.0.0.0",
         port: int = 8765,
     ) -> None:
@@ -43,6 +45,8 @@ class WebSocketStreamer:
         self.text_output_queue = text_output_queue  # Text messages -> clients
         self.should_listen = should_listen
         self._response_done_event = response_done_event
+        self._response_playing = response_playing
+        self._echo_reference_queue = echo_reference_queue
         self.host = host
         self.port = port
         self._sessions: dict[str, ServerConnection] = {}
@@ -179,6 +183,8 @@ class WebSocketStreamer:
                 # Check for audio
                 try:
                     audio_chunk = self.output_queue.get_nowait()
+                    if isinstance(audio_chunk, AudioOutput):
+                        audio_chunk = audio_chunk.audio
                     if isinstance(audio_chunk, bytes) and audio_chunk == PIPELINE_END:
                         if audio_buffer and _active():
                             data = bytes(audio_buffer)
@@ -196,7 +202,14 @@ class WebSocketStreamer:
                                 *[client.send(data) for client in _active()],
                                 return_exceptions=True,
                             )
+                            if self._echo_reference_queue is not None:
+                                try:
+                                    self._echo_reference_queue.put_nowait(data)
+                                except Exception:
+                                    pass
                         response_sending = False
+                        if self._response_playing is not None:
+                            self._response_playing.clear()
                         self.should_listen.set()
                         if self._response_done_event is not None:
                             self._response_done_event.set()
@@ -204,6 +217,8 @@ class WebSocketStreamer:
                         continue
                     if is_control_message(audio_chunk, SESSION_END.kind):
                         audio_buffer.clear()
+                        if self._response_playing is not None:
+                            self._response_playing.clear()
                         continue
 
                     if isinstance(audio_chunk, PipelineControlMessage):
@@ -221,23 +236,31 @@ class WebSocketStreamer:
                             continue
                         if not response_sending:
                             response_sending = True
-                            self.should_listen.clear()
+                            if self._response_playing is not None:
+                                self._response_playing.set()
                         audio_buffer.extend(chunk_bytes)
 
                         if len(audio_buffer) >= MIN_AUDIO_BYTES:
                             data = bytes(audio_buffer)
                             audio_buffer.clear()
-                            logger.debug(f"Sending {len(data)} bytes of audio to {len(_active())} client(s)")
                             await asyncio.gather(
                                 *[client.send(data) for client in _active()], return_exceptions=True
                             )
+                            if self._echo_reference_queue is not None:
+                                try:
+                                    self._echo_reference_queue.put_nowait(data)
+                                except Exception:
+                                    pass
                 except Empty:
-                    # Flush any buffered audio when queue is empty
                     if audio_buffer and _active():
                         data = bytes(audio_buffer)
                         audio_buffer.clear()
-                        logger.debug(f"Flushing {len(data)} bytes of audio to {len(_active())} client(s)")
                         await asyncio.gather(*[client.send(data) for client in _active()], return_exceptions=True)
+                        if self._echo_reference_queue is not None:
+                            try:
+                                self._echo_reference_queue.put_nowait(data)
+                            except Exception:
+                                pass
 
                 # Check for text/tool messages
                 if self.text_output_queue:

@@ -71,6 +71,7 @@ def test_active_forwards_bytes():
     handler._threshold = 0.5
     handler._activation_timeout_s = 30.0
     handler._activation_start_time = time.monotonic()
+    handler._last_audio_time = time.monotonic()
 
     chunk = b"\x00" * 1024
     results = list(handler.process(chunk))
@@ -85,6 +86,7 @@ def test_active_timeout_goes_to_sleep():
     handler._threshold = 0.5
     handler._activation_timeout_s = 0.0
     handler._activation_start_time = 0.0
+    handler._last_audio_time = 0.0
 
     chunk = b"\x00" * 1024
     results = list(handler.process(chunk))

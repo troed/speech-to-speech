@@ -14,15 +14,31 @@ import torch
 
 from speech_to_speech.api.openai_realtime.runtime_config import RuntimeConfig
 from speech_to_speech.baseHandler import BaseHandler
+from speech_to_speech.pipeline.cancel_scope import CancelScope
 from speech_to_speech.pipeline.events import SpeechStartedEvent, SpeechStoppedEvent
 from speech_to_speech.pipeline.handler_types import VADIn, VADOut
-from speech_to_speech.pipeline.messages import VADAudio
+from speech_to_speech.pipeline.messages import AUDIO_RESPONSE_DONE, PIPELINE_END, VADAudio
 from speech_to_speech.pipeline.queue_types import TextEventItem
 from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
 from speech_to_speech.utils.utils import int2float
 from speech_to_speech.VAD.vad_iterator import VADIterator
 
 logger = logging.getLogger(__name__)
+
+
+def _drain_echo_rms(echo_queue: Queue) -> float:
+    """Drain all pending echo-reference chunks and return the average RMS."""
+    total_rms = 0.0
+    count = 0
+    while not echo_queue.empty():
+        try:
+            ref_chunk = echo_queue.get_nowait()
+            ref_arr = np.frombuffer(ref_chunk, dtype=np.int16).astype(np.float32) / 32768.0
+            total_rms += float(np.sqrt(np.mean(ref_arr**2)))
+            count += 1
+        except Exception:
+            break
+    return total_rms / count if count > 0 else 0.0
 
 VADInput: TypeAlias = bytes | tuple[bytes, RuntimeConfig]
 
@@ -75,6 +91,14 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         speculative_reopen_ms: int = 1000,
         unanswered_reopen_ms: int = 7000,
         short_segment_merge_ms: int = 0,
+        cancel_scope: CancelScope | None = None,
+        response_playing: Event | None = None,
+        interrupt_enabled: bool = True,
+        interrupt_rms_threshold: float = 0.002,
+        interrupt_preroll_ms: int = 500,
+        wake_chime_bytes: bytes | None = None,
+        chime_output_queue: Queue | None = None,
+        echo_reference_queue: Queue | None = None,
     ) -> None:
         self.should_listen = should_listen
         self.sample_rate = sample_rate
@@ -151,6 +175,19 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         self._last_final_audio_ms: int | None = None
         self._pending_reopen_candidate: tuple[str, int, int] | None = None
         self._pending_short_segment: _PendingShortSegment | None = None
+
+        # Barge-in / interrupt state
+        self._cancel_scope = cancel_scope
+        self._response_playing = response_playing
+        self._interrupt_enabled = interrupt_enabled
+        self._interrupt_rms_threshold = interrupt_rms_threshold
+        self._interrupt_preroll_ms = interrupt_preroll_ms
+        self._wake_chime_bytes = wake_chime_bytes
+        self._chime_output_queue = chime_output_queue
+        self._interrupt_audio_buffer: list[torch.Tensor] = []
+        self._interrupt_triggered = False
+        self._interrupt_speech_counter = 0
+        self._echo_reference_queue = echo_reference_queue
 
     @property
     def _audio_ms(self) -> int:
@@ -510,16 +547,58 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
             audio_chunk, runtime_config = audio_chunk
         self._apply_runtime_turn_detection(runtime_config)
 
-        if not self.should_listen.is_set():
-            return
-
-        # Normal listening mode
-        self._log_chunks += 1
+        # Always run VAD processing for barge-in detection
         audio_int16 = np.frombuffer(audio_chunk, dtype=np.int16)
         self._total_samples += len(audio_int16)
         audio_float32 = int2float(audio_int16)
+        audio_float32_t = torch.from_numpy(audio_float32)
 
-        vad_output = self.iterator(torch.from_numpy(audio_float32))
+        # ── Barge-in / interrupt detection during TTS playback ──────────
+        if (
+            self._interrupt_enabled
+            and self._response_playing is not None
+            and self._response_playing.is_set()
+            and not self._interrupt_triggered
+        ):
+            self._interrupt_audio_buffer.append(audio_float32_t)
+            # Keep only the preroll window
+            _sample_rate = self.sample_rate
+            _max_samples = int(self._interrupt_preroll_ms * _sample_rate / 1000)
+            _total = sum(c.numel() for c in self._interrupt_audio_buffer)
+            while _total > _max_samples and self._interrupt_audio_buffer:
+                _total -= self._interrupt_audio_buffer.pop(0).numel()
+
+            speech_prob: float = self.model(audio_float32_t, self.sample_rate).item()
+            if speech_prob > 0.5:
+                # Gate against echo: if input energy isn't substantially higher than
+                # what the speaker is currently playing, it's likely acoustic echo.
+                if self._echo_reference_queue is not None:
+                    input_rms = audio_float32_t.pow(2).mean().sqrt().item()
+                    ref_rms = _drain_echo_rms(self._echo_reference_queue)
+                    if ref_rms > 0 and input_rms < ref_rms * 1.5:
+                        self._interrupt_speech_counter = 0
+                        return
+                self._interrupt_speech_counter += 1
+                _min_chunks = max(1, int(self.min_speech_continuation_ms / 1000 * self.sample_rate / 512))
+                if self._interrupt_speech_counter >= _min_chunks:
+                    self._interrupt_triggered = True
+                    yield from self._handle_barge_in()
+            else:
+                self._interrupt_speech_counter = 0
+            return
+
+        # ── Normal: only yield output when listening ────────────────────
+        if not self.should_listen.is_set():
+            return
+
+        # Reset interrupt buffer and counter when transitioning out of interrupt mode
+        if self._interrupt_audio_buffer:
+            self._interrupt_audio_buffer.clear()
+        self._interrupt_speech_counter = 0
+
+        # Normal listening mode
+        self._log_chunks += 1
+        vad_output = self.iterator(audio_float32_t)
 
         # Deferred speech_started: only emit once active VAD speech reaches the valid speech threshold.
         is_triggered_now = self.iterator.triggered
@@ -580,6 +659,54 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         else:
             # Original mode: yield only when speech ends
             yield from self._process_normal(vad_output)
+
+    def _handle_barge_in(self) -> Iterator[VADOut]:
+        """Handle barge-in: cancel current output, clear queues, play chime, re-feed buffered audio."""
+        logger.info("VAD: barge-in detected — interrupting TTS playback")
+
+        # 1. Cancel in-flight generation and TTS synthesis
+        if self._cancel_scope is not None:
+            self._cancel_scope.cancel()
+
+        # 2. Clear response playing flag
+        if self._response_playing is not None:
+            self._response_playing.clear()
+
+        # 3. Flush output queue (clear pending TTS audio)
+        if self._chime_output_queue is not None:
+            while not self._chime_output_queue.empty():
+                try:
+                    item = self._chime_output_queue.get_nowait()
+                    if item in (AUDIO_RESPONSE_DONE, PIPELINE_END):
+                        self._chime_output_queue.put_nowait(item)
+                except Exception:
+                    pass
+
+        # 4. Play wake chime to signal system is listening again
+        if self._wake_chime_bytes is not None and self._chime_output_queue is not None:
+            try:
+                self._chime_output_queue.put_nowait(self._wake_chime_bytes)
+                logger.info("VAD: played wake chime after barge-in")
+            except Exception as exc:
+                logger.warning("VAD: failed to queue wake chime on barge-in: %s", exc)
+
+        # 5. Reset VAD state and re-feed buffered audio so speech start is captured
+        self.iterator.reset_states()
+        self._speech_started_emitted = False
+
+        for buffered_chunk in self._interrupt_audio_buffer:
+            _ = self.iterator(buffered_chunk)
+        self._interrupt_audio_buffer.clear()
+        self._interrupt_triggered = False
+
+        # 6. Re-enable listening so VAD yields from subsequent chunks
+        self.should_listen.set()
+
+        logger.info("VAD: barge-in complete — system listening for new speech")
+        return
+        # The following yield is required to make this a generator so the
+        # caller can use `yield from`: it is never reached (returned above).
+        yield  # pragma: no cover
 
     def _process_realtime(self, vad_output: list[torch.Tensor] | None) -> Iterator[VADOut]:
         """Process with real-time progressive audio release."""
@@ -733,7 +860,8 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
                         self.speculative_reopen_ms / 1000.0,
                     )
                 else:
-                    self.should_listen.clear()
+                    if not self._interrupt_enabled:
+                        self.should_listen.clear()
                 yield VADAudio(audio=output_array, mode="final", turn_id=turn_id, turn_revision=turn_revision)
                 self.last_process_time = 0.0
                 self._speech_started_emitted = False
@@ -813,8 +941,11 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
                         )
                     )
                 self._log_speech_ends += 1
-                self.should_listen.clear()
-                logger.info(f"Speech ended ({duration_ms:.0f}ms), stop listening")
+                if not self._interrupt_enabled:
+                    self.should_listen.clear()
+                    logger.info(f"Speech ended ({duration_ms:.0f}ms), stop listening")
+                else:
+                    logger.info(f"Speech ended ({duration_ms:.0f}ms), keeping listen active for barge-in")
                 if self.text_output_queue:
                     self.text_output_queue.put(SpeechStoppedEvent(duration_s=duration_ms / 1000.0, audio_end_ms=end_ms))
                 if self.audio_enhancement:
@@ -862,6 +993,9 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         self._pending_reopen_candidate = None
         if self.speculative_turns:
             self.speculative_turns.reset()
+        self._interrupt_audio_buffer.clear()
+        self._interrupt_triggered = False
+        self._interrupt_speech_counter = 0
         self.should_listen.set()
         logger.debug("VAD session state reset")
 

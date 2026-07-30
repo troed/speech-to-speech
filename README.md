@@ -24,6 +24,8 @@
 > **5. Echo cancellation.** `EchoFilter` tracks recently spoken assistant text and suppresses identical user utterances via the transcription notifier, preventing the system from responding to its own speech.
 >
 > **6. Reopenable speculative turns.** The VAD can soft-end a speech segment and reopen it within a configurable grace window, reducing false turn completions. Supported by `SpeculativeTurnTracker` across the pipeline.
+>
+> **7. Barge-in (interrupt).** Speak over the assistant mid-response to interrupt TTS output. The system cancels in-flight generation, clears pending audio, plays a wake chime, and processes your speech as new input without requiring the wake word. Enabled by default in all modes (local, WebSocket, socket). Use `--interrupt-enabled` to toggle and `--interrupt-rms-threshold` / `--interrupt-preroll-ms` to tune sensitivity. Acoustic echo is gated automatically by comparing mic input against speaker output energy.
 
 ## Usage
 

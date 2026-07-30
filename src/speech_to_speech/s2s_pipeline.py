@@ -368,6 +368,7 @@ def initialize_queues_and_events() -> dict[str, Any]:
         "lm_response_queue": Queue[LMOutItem](),
         "lm_processed_queue": Queue[TTSInItem](),  # NEW: LLM -> LM processor -> TTS
         "text_output_queue": Queue[TextEventItem](),  # NEW: for text messages to WebSocket
+        "echo_reference_queue": Queue[bytes](),  # Reference audio for echo gating during barge-in
     }
 
 
@@ -401,6 +402,7 @@ def _build_pipeline_handlers(
     speculative_turns: SpeculativeTurnTracker | None = None,
     wake_word_handler_kwargs: WakeWordHandlerArguments | None = None,
     response_done_event: Event | None = None,
+    response_playing: Event | None = None,
     echo_filter: EchoFilter | None = None,
     mcp_client_manager: Any = None,
 ) -> list[Any]:
@@ -438,6 +440,8 @@ def _build_pipeline_handlers(
         ww_setup["should_listen"] = should_listen
         if response_done_event is not None:
             ww_setup["response_done_event"] = response_done_event
+        if response_playing is not None:
+            ww_setup["response_playing"] = response_playing
         wake_word = WakeWordHandler(
             stop_event,
             queue_in=recv_audio_chunks_queue,
@@ -455,6 +459,12 @@ def _build_pipeline_handlers(
         vars(responses_api_language_model_handler_kwargs)["search_chime_bytes"] = search_chime
         vars(language_model_handler_kwargs)["chime_output_queue"] = send_audio_chunks_queue
         vars(language_model_handler_kwargs)["search_chime_bytes"] = search_chime
+
+    # ── Inject wake chime + output queue into VAD handler kwargs ────────
+    # (needed for barge-in chime replay)
+    if wake_word_chime is not None:
+        vars(vad_handler_kwargs)["wake_chime_bytes"] = wake_word_chime
+        vars(vad_handler_kwargs)["chime_output_queue"] = send_audio_chunks_queue
 
     search_instructions = module_kwargs.search_instructions
     if search_instructions:
@@ -701,6 +711,8 @@ def build_pipeline(
     stop_event = queues_and_events["stop_event"]
     should_listen = queues_and_events["should_listen"]
     response_done_event = queues_and_events["response_done_event"]
+    response_playing = queues_and_events["response_playing"]
+    cancel_scope = queues_and_events["cancel_scope"]
     recv_audio_chunks_queue = queues_and_events["recv_audio_chunks_queue"]
     send_audio_chunks_queue = queues_and_events["send_audio_chunks_queue"]
     spoken_prompt_queue = queues_and_events["spoken_prompt_queue"]
@@ -712,6 +724,21 @@ def build_pipeline(
         None  # Only set for websocket/realtime modes; kept None otherwise to avoid unbounded queue growth
     )
 
+    # Inject cancel_scope into all LM and TTS handler kwargs for non-realtime
+    # modes so handlers can support cancellation (barge-in). Do NOT inject
+    # speculative_turns here — it switches VAD to _process_realtime() which
+    # does not clear should_listen, breaking the websocket/socket/local flow.
+    for kw in (
+        language_model_handler_kwargs,
+        responses_api_language_model_handler_kwargs,
+        kokoro_tts_handler_kwargs,
+        qwen3_tts_handler_kwargs,
+        pocket_tts_handler_kwargs,
+        chat_tts_handler_kwargs,
+        facebook_mms_tts_handler_kwargs,
+    ):
+        vars(kw)["cancel_scope"] = cancel_scope
+
     comms_handlers: list[Any] = []
     if module_kwargs.mode == "local":
         from speech_to_speech.connections.local_audio_streamer import LocalAudioStreamer
@@ -720,9 +747,10 @@ def build_pipeline(
             input_queue=recv_audio_chunks_queue,
             output_queue=send_audio_chunks_queue,
             should_listen=should_listen,
-        response_done_event=response_done_event,
-        mcp_client_manager=mcp_client_manager,
-    )
+            response_done_event=response_done_event,
+            response_playing=response_playing,
+            echo_reference_queue=queues_and_events.get("echo_reference_queue"),
+        )
         comms_handlers = [local_audio_streamer]
         should_listen.set()
     elif module_kwargs.mode == "websocket":
@@ -730,14 +758,16 @@ def build_pipeline(
 
         text_output_queue = queues_and_events["text_output_queue"]
         websocket_streamer = WebSocketStreamer(
-            stop_event,
+            stop_event=stop_event,
             input_queue=recv_audio_chunks_queue,
             output_queue=send_audio_chunks_queue,
             should_listen=should_listen,
             text_output_queue=text_output_queue,
             response_done_event=response_done_event,
-            host=websocket_streamer_kwargs.ws_host,
-            port=websocket_streamer_kwargs.ws_port,
+            response_playing=response_playing,
+            echo_reference_queue=queues_and_events.get("echo_reference_queue"),
+            host=websocket_streamer_kwargs.ws_host or "0.0.0.0",
+            port=websocket_streamer_kwargs.ws_port or 8765,
         )
         comms_handlers = [websocket_streamer]
     elif module_kwargs.mode == "realtime":
@@ -802,6 +832,26 @@ def build_pipeline(
             ),
         ]
 
+    # Inject cancel_scope, response_playing, and interrupt params into VAD kwargs
+    # so it has everything needed for barge-in detection.
+    vars(vad_handler_kwargs)["cancel_scope"] = cancel_scope
+    vars(vad_handler_kwargs)["response_playing"] = response_playing
+    vars(vad_handler_kwargs)["interrupt_enabled"] = module_kwargs.interrupt_enabled
+    vars(vad_handler_kwargs)["interrupt_rms_threshold"] = module_kwargs.interrupt_rms_threshold
+    vars(vad_handler_kwargs)["interrupt_preroll_ms"] = module_kwargs.interrupt_preroll_ms
+    vars(vad_handler_kwargs)["echo_reference_queue"] = queues_and_events.get("echo_reference_queue")
+
+    # Inject wake chime into VAD for barge-in playback (same chime used by WakeWordHandler)
+    if wake_word_handler_kwargs is not None:
+        ww_path = wake_word_handler_kwargs.wake_chime
+        if ww_path:
+            from speech_to_speech.chime_loader import ChimeLoader
+            chime_loader = ChimeLoader(wake_chime_path=ww_path)
+            wake_chime_bytes = chime_loader.wake_chime
+            if wake_chime_bytes is not None:
+                vars(vad_handler_kwargs)["wake_chime_bytes"] = wake_chime_bytes
+                vars(vad_handler_kwargs)["chime_output_queue"] = send_audio_chunks_queue
+
     # Set VAD realtime transcription parameters from module_kwargs
     if module_kwargs.enable_live_transcription:
         vad_handler_kwargs.enable_realtime_transcription = True
@@ -855,6 +905,7 @@ def build_pipeline(
         qwen3_tts_handler_kwargs=qwen3_tts_handler_kwargs,
         wake_word_handler_kwargs=wake_word_handler_kwargs,
         response_done_event=response_done_event,
+        response_playing=response_playing,
         mcp_client_manager=mcp_client_manager,
     )
 

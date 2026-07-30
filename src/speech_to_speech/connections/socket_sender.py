@@ -7,7 +7,7 @@ import numpy as np
 from rich.console import Console
 
 from speech_to_speech.pipeline.control import PipelineControlMessage
-from speech_to_speech.pipeline.messages import AUDIO_RESPONSE_DONE, PIPELINE_END
+from speech_to_speech.pipeline.messages import AUDIO_RESPONSE_DONE, PIPELINE_END, AudioOutput
 from speech_to_speech.pipeline.queue_types import AudioOutItem
 
 logger = logging.getLogger(__name__)
@@ -52,6 +52,8 @@ class SocketSender:
                 continue
             if isinstance(audio_chunk, PipelineControlMessage):
                 continue
+            if isinstance(audio_chunk, AudioOutput):
+                audio_chunk = audio_chunk.audio
             if isinstance(audio_chunk, bytes) and audio_chunk == AUDIO_RESPONSE_DONE:
                 self.should_listen.set()
                 if self._response_done_event is not None:

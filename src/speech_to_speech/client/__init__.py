@@ -256,9 +256,16 @@ async def websocket_client(
 
     def clear_live() -> None:
         nonlocal live_user_width
-        if live_user_width:
+        if live_user_width > 0:
             print("\r" + " " * live_user_width + "\r", end="", flush=True)
             live_user_width = 0
+
+    def _drain_queue(queue: Queue) -> None:
+        while not queue.empty():
+            try:
+                queue.get_nowait()
+            except Exception:
+                break
 
     async def send_audio(ws: Any) -> None:
         nonlocal response_active
