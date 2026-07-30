@@ -119,11 +119,14 @@ class MCPClientManager:
                         logger.warning("MCP server '%s': tools/list failed: %s", name, _exc_message(exc))
                         continue
 
+                    tool_overrides = cfg.get("toolOverrides", {})
                     for tool in tools_result.tools:
+                        overrides = tool_overrides.get(tool.name, {})
+                        description = overrides.get("description", tool.description or "")
                         definition: dict[str, Any] = {
                             "type": "function",
                             "name": tool.name,
-                            "description": tool.description or "",
+                            "description": description,
                             "parameters": tool.input_schema if tool.input_schema else {"type": "object", "properties": {}},
                         }
                         self._register_tool(tool.name, name, definition)
