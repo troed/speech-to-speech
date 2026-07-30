@@ -29,6 +29,7 @@ class WakeWordHandler(BaseHandler[VADIn, VADIn]):
     """
 
     _response_done_event: Optional[Event] = None
+    _response_playing: Optional[Event] = None
     _SILENCE_THRESHOLD = 100
 
     def setup(
@@ -41,6 +42,7 @@ class WakeWordHandler(BaseHandler[VADIn, VADIn]):
         chime_output_queue: Optional[Queue] = None,
         should_listen: Optional[Event] = None,
         response_done_event: Optional[Event] = None,
+        response_playing: Optional[Event] = None,
     ) -> None:
         self._threshold = threshold
         self._activation_timeout_s = activation_timeout_s
@@ -53,6 +55,7 @@ class WakeWordHandler(BaseHandler[VADIn, VADIn]):
         self._chime_output_queue = chime_output_queue
         self._should_listen = should_listen
         self._response_done_event = response_done_event
+        self._response_playing = response_playing
         sample_rate = 16000
         self._preroll_chunks = max(1, int((preroll_ms / 1000) * sample_rate / 512))
 
@@ -111,6 +114,8 @@ class WakeWordHandler(BaseHandler[VADIn, VADIn]):
                 self._response_done_event.clear()
                 self._last_audio_time = now
                 logger.debug("WakeWordHandler: response done, reset activation timer")
+            if self._response_playing is not None and self._response_playing.is_set():
+                self._last_audio_time = now
             if self._has_audio_energy(chunk):
                 self._last_audio_time = now
             if now - self._last_audio_time > self._activation_timeout_s:

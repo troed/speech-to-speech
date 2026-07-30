@@ -7,6 +7,7 @@ from queue import Queue
 import numpy as np
 import sounddevice as sd
 
+from speech_to_speech.pipeline.control import SESSION_END, PipelineControlMessage, is_control_message
 from speech_to_speech.pipeline.messages import AUDIO_RESPONSE_DONE, AudioOutput
 from speech_to_speech.pipeline.queue_types import AudioInItem, AudioOutItem
 
@@ -20,6 +21,8 @@ class LocalAudioStreamer:
         output_queue: Queue[AudioOutItem],
         should_listen: threading.Event,
         response_done_event: threading.Event | None = None,
+        response_playing: threading.Event | None = None,
+        echo_reference_queue: Queue | None = None,
         list_play_chunk_size: int = 512,
     ) -> None:
         self.list_play_chunk_size = list_play_chunk_size
@@ -29,6 +32,8 @@ class LocalAudioStreamer:
         self.output_queue = output_queue
         self.should_listen = should_listen
         self._response_done_event = response_done_event
+        self._response_playing = response_playing
+        self._echo_reference_queue = echo_reference_queue
         self._pcm_buffer = deque()
 
     def _next_pcm_frame(self, frames: int) -> np.ndarray:
@@ -62,18 +67,28 @@ class LocalAudioStreamer:
         else:
             pcm = np.array([], dtype=np.int16)
         if len(pcm):
-            # Split into 512-sample chunks for the callback
+            if self._response_playing is not None and not self._response_playing.is_set():
+                self._response_playing.set()
             for i in range(0, len(pcm), self.list_play_chunk_size):
-                self._pcm_buffer.append(pcm[i:i + self.list_play_chunk_size])
+                chunk = pcm[i:i + self.list_play_chunk_size]
+                self._pcm_buffer.append(chunk)
+                if self._echo_reference_queue is not None:
+                    try:
+                        self._echo_reference_queue.put_nowait(chunk.tobytes())
+                    except Exception:
+                        pass
 
     def run(self) -> None:
         dither = np.random.randint(-1, 2, size=(self.list_play_chunk_size, 1), dtype=np.int16)
-        _dummy_silence = np.zeros(self.list_play_chunk_size, dtype=np.int16)
 
         def callback(indata: np.ndarray, outdata: np.ndarray, frames: int, time: float, status: str) -> None:
             if self.stop_event.is_set():
                 outdata[:] = 0 * outdata
                 return
+
+            # Always capture mic input (full-duplex)
+            pcm = np.ascontiguousarray(indata, dtype=np.int16)
+            self.input_queue.put(pcm.tobytes())
 
             # Drain any new items from the output queue into the PCM buffer
             while not self.output_queue.empty():
@@ -83,7 +98,12 @@ class LocalAudioStreamer:
                         self.should_listen.set()
                         if self._response_done_event is not None:
                             self._response_done_event.set()
+                        if self._response_playing is not None:
+                            self._response_playing.clear()
                         logger.debug("Response complete, listening re-enabled")
+                    elif isinstance(chunk, PipelineControlMessage) and is_control_message(chunk, SESSION_END.kind):
+                        if self._response_playing is not None:
+                            self._response_playing.clear()
                     else:
                         self._consume_chunk(chunk)
                 except Exception:
@@ -92,8 +112,6 @@ class LocalAudioStreamer:
             if self._pcm_buffer:
                 outdata[:] = self._next_pcm_frame(frames)[:, np.newaxis]
             else:
-                pcm = np.ascontiguousarray(indata, dtype=np.int16)
-                self.input_queue.put(pcm.tobytes())
                 outdata[:] = dither
 
         logger.debug("Available devices:")
