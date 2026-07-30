@@ -289,6 +289,10 @@ async def websocket_client(
 
             if wake_event is None or wake_event.is_set():
                 await ws.send(chunk)
+                # User is actively sending audio — extend the grace deadline
+                # so it can't expire in the middle of a spoken turn.
+                if not response_active and grace_deadline > 0:
+                    grace_deadline = time.monotonic() + wake_inactivity_timeout
 
     async def receive_audio(ws: Any) -> None:
         nonlocal last_recv_audio, response_active
