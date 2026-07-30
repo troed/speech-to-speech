@@ -3,6 +3,13 @@
     "tinysearch": {
       "type": "http",
       "url": "http://localhost:8765/mcp"
+    },
+    "Home Assistant": {
+      "type": "http",
+      "url": "http://haserver.local:8123/api/mcp",
+      "headers": {
+        "Authorization": "Bearer <long lived access token>"
+      }
     }
   }
 }

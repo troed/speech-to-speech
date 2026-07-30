@@ -232,6 +232,8 @@ uv.lock*.opus
 *.wav
 *.tflite
 *.onnx
-run.sh
+server.sh
+client.sh
 swerun.sh
 mcp.json
+docs/superpowers/
