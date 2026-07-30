@@ -11,13 +11,21 @@
 </div>
 
 > [!IMPORTANT]
-> This is a **fork** of [huggingface/speech-to-speech](https://github.com/huggingface/speech-to-speech) with three additions.
+> This is a **fork** of [huggingface/speech-to-speech](https://github.com/huggingface/speech-to-speech) with the following additions:
 >
-> **1. Server-side web search.** The LLM can search the web during a conversation. When it decides it needs current information, it calls a `web_search` tool that routes through a local [tinysearch](https://github.com/anomalyco/opencode/tree/main/mcp/tinysearch) MCP server — SearXNG backed, no API keys required. The tool call is handled entirely server-side: the result is injected back into the conversation context and the LLM continues naturally. Client-facing tool forwarding is suppressed, so WebSocket/Realtime clients see only the final text response. Run the tinysearch server on `localhost:8765` before starting — the `web_search` tool is injected automatically.
+> **1. Multi-MCP server support.** Replace the single hardcoded tinysearch integration with a standard `mcp.json` config supporting any number of MCP servers via the official `mcp` Python SDK v2. The LLM can use tools from any configured MCP server — web search, Home Assistant device control, file system access, or any other MCP-compatible server. Configured via `--mcp-config mcp.json` (defaults to `mcp.json` in the working directory), supporting both HTTP and stdio transports with custom auth headers.
 >
-> **2. Wake word detection.** The system can be put to sleep and only respond after hearing a configured wake word (e.g. "computer"). Uses [openWakeWord](https://github.com/dscripka/openWakeWord) — train a custom ONNX model at [openwakeword.com/train](https://openwakeword.com/train). When no wake word model is configured, the system behaves as before (always-listening).
+> **2. Home Assistant integration.** Connect to Home Assistant's [MCP server](https://www.home-assistant.io/integrations/conversation/) to control devices, query sensor states, get live context, and more through natural language. Tools discovered automatically: `HassTurnOn`, `HassTurnOff`, `HassLightSet`, `HassBroadcast`, `HassMedia*`, `GetDateTime`, `GetLiveContext`, and others.
 >
-> **3. Audio chimes.** Optionally play WAV chimes on wake word detection (signals the user can speak) and when a server-side tool/search returns (signals the answer is incoming). Passed via `--wake_word_wake_chime` and `--wake_word_search_chime`.
+> **3. Wake word detection.** The system can be put to sleep and only respond after hearing a configured wake word (e.g. "computer"). Uses [openWakeWord](https://github.com/dscripka/openWakeWord) — train a custom ONNX model at [openwakeword.com/train](https://openwakeword.com/train). When no wake word model is configured, the system behaves as before (always-listening).
+>
+> **4. Audio chimes.** Optionally play WAV chimes on wake word detection (signals the user can speak) and when a server-side tool/search returns (signals the answer is incoming). Passed via `--wake_word_wake_chime` and `--wake_word_search_chime`.
+>
+> **5. Dedicated WebSocket client.** A standalone `speech-to-speech-client` CLI tool with optional local wake word detection, microphone input, and speaker output. Connect to any WebSocket-mode server with `--host` and `--port`.
+>
+> **6. Echo cancellation.** `EchoFilter` tracks recently spoken assistant text and suppresses identical user utterances via the transcription notifier, preventing the system from responding to its own speech.
+>
+> **7. Reopenable speculative turns.** The VAD can soft-end a speech segment and reopen it within a configurable grace window, reducing false turn completions. Supported by `SpeculativeTurnTracker` across the pipeline.
 
 A low-latency, fully modular voice-agent pipeline: **VAD -> STT -> LLM -> TTS**, exposed through an **OpenAI Realtime-compatible WebSocket API**. Every component is swappable. The LLM slot speaks OpenAI-compatible protocols, so you can point it at a hosted provider, at [HF Inference Providers](https://huggingface.co/inference-providers), or at a vLLM or llama.cpp server on your own hardware for a fully local, fully open stack.
 
