@@ -842,6 +842,17 @@ def build_pipeline(
     vars(vad_handler_kwargs)["interrupt_preroll_ms"] = module_kwargs.interrupt_preroll_ms
     vars(vad_handler_kwargs)["echo_reference_queue"] = queues_and_events.get("echo_reference_queue")
 
+    # Inject wake chime into VAD for barge-in playback (same chime used by WakeWordHandler)
+    if wake_word_handler_kwargs is not None:
+        ww_path = wake_word_handler_kwargs.wake_chime
+        if ww_path:
+            from speech_to_speech.chime_loader import ChimeLoader
+            chime_loader = ChimeLoader(wake_chime_path=ww_path)
+            wake_chime_bytes = chime_loader.wake_chime
+            if wake_chime_bytes is not None:
+                vars(vad_handler_kwargs)["wake_chime_bytes"] = wake_chime_bytes
+                vars(vad_handler_kwargs)["chime_output_queue"] = send_audio_chunks_queue
+
     # Set VAD realtime transcription parameters from module_kwargs
     if module_kwargs.enable_live_transcription:
         vad_handler_kwargs.enable_realtime_transcription = True
