@@ -1,0 +1,25 @@
+#!/bin/bash
+
+OPENAI_API_KEY=none speech-to-speech \
+  \
+  --wake_word_search_chime ready.wav \
+  --search_instructions "Keep the results short suitable for spoken instructions. No links or number references to sources. No headlines. No markdown." \
+  --thresh 0.6 \
+  --stt parakeet-tdt \
+  --llm_backend responses-api \
+  --init_chat_prompt "You are the computer on the star ship Enterprise. You provide plain factual and concise answers when crew members ask for your help." \
+  --tts qwen3 \
+  --qwen3_tts_model_name Qwen/Qwen3-TTS-12Hz-1.7B-Base \
+  --qwen3_tts_ref_audio ./computer.wav \
+  --qwen3_tts_ref_text "Darmak is the name of a seventh dynasty emperor on condon four A myth of a historical hunter on Chantil three A colony on Melindi seven" \
+  --qwen3_tts_instruct "You are the computer voice from Star Trek TNG. Speak in flat monotone voice." \
+  --qwen3_tts_language auto \
+  --qwen3_tts_backend torch \
+  --mcp-config mcp.json \
+  --responses_api_base_url http://192.168.0.2:11434 \
+  --model_name gemma-4-12B-it-qat-UD-Q4_K_XL \
+  --chat_size 30 \
+  --responses_api_stream \
+  --enable_live_transcription \
+  --ws-port 8766 \
+  --mode websocket

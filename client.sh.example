@@ -1,0 +1,8 @@
+#!/bin/bash
+
+speech-to-speech-client \
+        --host 192.168.0.6 \
+        --port 8766 \
+        --wake-word-model computer.onnx \
+        --wake-chime ready.wav \
+        --wake-inactivity-timeout 10
