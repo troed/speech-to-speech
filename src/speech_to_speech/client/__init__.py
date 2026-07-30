@@ -307,6 +307,10 @@ async def websocket_client(
                 last_recv_audio = time.monotonic()
                 if not response_active:
                     response_active = True
+                # Server is actively responding — keep the session alive
+                # so the conversation doesn't drop on grace-period expiry.
+                if wake_event is not None and not wake_event.is_set():
+                    wake_event.set()
             else:
                 try:
                     event = json.loads(message)

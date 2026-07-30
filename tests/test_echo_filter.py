@@ -62,3 +62,18 @@ class TestEchoFilter:
         f = EchoFilter()
         f.record("The capital of France is Paris, a beautiful city known for the Eiffel Tower")
         assert not f.is_echo("What about the weather in Berlin")
+
+    def test_user_transcription_catches_echo(self):
+        f = EchoFilter()
+        f.record("July thirty first from one")
+        assert f.is_echo("July thirty first from one for your trout")
+
+    def test_user_transcription_catches_echo_with_extra_words(self):
+        f = EchoFilter()
+        f.record("What time is my appointment")
+        assert f.is_echo("What time is my appointment on Thursday")
+
+    def test_user_transcription_not_echo_for_different_question(self):
+        f = EchoFilter()
+        f.record("July thirty first from one")
+        assert not f.is_echo("What is the weather in Paris today")

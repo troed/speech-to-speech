@@ -71,20 +71,30 @@ from speech_to_speech.STT.transcription_notifier import TranscriptionNotifier
 from speech_to_speech.utils.thread_manager import ThreadManager
 from speech_to_speech.VAD.vad_handler import VADHandler
 
-# Ensure that the necessary NLTK resources are available
-try:
-    nltk.data.find("tokenizers/punkt_tab")
-except (LookupError, OSError):
-    nltk.download("punkt_tab")
-try:
-    nltk.data.find("tokenizers/averaged_perceptron_tagger_eng")
-except (LookupError, OSError):
-    nltk.download("averaged_perceptron_tagger_eng")
+# Cache-only NLTK resource check (no network).
+def _ensure_nltk_resource(resource_id: str) -> None:
+    _log = logging.getLogger(__name__)
+    try:
+        nltk.data.find(resource_id)
+    except (LookupError, OSError):
+        _log.warning(
+            "NLTK resource '%s' not found — download it once with:\n"
+            "  python3 -m nltk.downloader %s",
+            resource_id,
+            resource_id,
+        )
+
+_ensure_nltk_resource("tokenizers/punkt_tab")
+_ensure_nltk_resource("taggers/averaged_perceptron_tagger_eng")
 
 # caching allows ~50% compilation time reduction
 # see https://docs.google.com/document/d/1y5CRfMLdwEoF1nTk9q8qEu1mgMUuUtvhklPKJ2emLU8/edit#heading=h.o2asbxsrp1ma
 CURRENT_DIR = Path(__file__).resolve().parent
 os.environ["TORCHINDUCTOR_CACHE_DIR"] = os.path.join(CURRENT_DIR, "tmp")
+
+# Prevent all outbound HuggingFace Hub requests — models must be cached locally.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 console = Console()
 logger = logging.getLogger(__name__)

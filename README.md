@@ -25,9 +25,23 @@
 >
 > **6. Reopenable speculative turns.** The VAD can soft-end a speech segment and reopen it within a configurable grace window, reducing false turn completions. Supported by `SpeculativeTurnTracker` across the pipeline.
 
-A low-latency, fully modular voice-agent pipeline: **VAD -> STT -> LLM -> TTS**, exposed through an **OpenAI Realtime-compatible WebSocket API**. Every component is swappable. The LLM slot speaks OpenAI-compatible protocols, so you can point it at a hosted provider, at [HF Inference Providers](https://huggingface.co/inference-providers), or at a vLLM or llama.cpp server on your own hardware for a fully local, fully open stack.
+## Usage
 
-This pipeline runs in production as the conversation backend for thousands of [Reachy Mini](https://huggingface.co/blog/reachy-mini) robots.
+### Model Setup
+
+The pipeline uses several models (STT, VAD, TTS). These are **never auto-downloaded** — all network access is blocked at startup. There are two ways to get them:
+
+**One-time download (recommended):**
+
+```bash
+uv run python scripts/download_models.py
+```
+
+Downloads all default models (NLTK data, Silero VAD, Parakeet TDT, Qwen3-TTS) into local caches. After this completes, the pipeline runs fully offline.
+
+**Run offline without pre-downloading:**
+
+Set `HF_HUB_OFFLINE=0` and `TRANSFORMERS_OFFLINE=0` in your environment so `from_pretrained()` can download on first use. Not recommended for production — network hiccups at inference time cause audible gaps.
 
 <p align="center">
   <picture>

@@ -4,6 +4,15 @@
 - Keep release pull requests focused on version metadata and release documentation.
 - Do not commit local build artifacts such as `dist/`, `build/`, or generated wheel/sdist files.
 
+## Branch Workflow
+
+Development happens on the `devel` branch. `main` is reserved for releases.
+
+- All day-to-day work, commits, and experiments go on `devel`.
+- When a set of changes represents a cohesive new feature or major improvement, open a pull request from `devel` to `main`.
+- Merge to `main` only when preparing a release — then follow the PyPI publishing workflow below.
+- `main` should always be in a releasable state.
+
 ## Publishing to PyPI
 
 PyPI publishing is handled by GitHub Actions in `.github/workflows/publish.yml`. The workflow runs on pushed tags that match `v*`, builds the package with `uv build`, checks the artifacts with `twine check --strict`, and publishes through the configured `pypi` environment.
