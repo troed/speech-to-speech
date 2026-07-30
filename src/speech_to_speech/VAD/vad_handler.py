@@ -95,10 +95,15 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         self._last_turn_detection: dict | None = None
 
         # Load cached VAD model (no network — warn and use default if missing).
-        _vad_cache = os.path.join(torch.hub.get_dir(), "snakers4_silero-vad_main")
-        if not os.path.isdir(_vad_cache):
+        _vad_cache = torch.hub.get_dir()
+        _vad_cached = (
+            any(d.startswith("snakers4_silero-vad") for d in os.listdir(_vad_cache))
+            if os.path.isdir(_vad_cache)
+            else False
+        )
+        if not _vad_cached:
             logger.warning(
-                "Silero VAD model not cached at %s — download it once with:\n"
+                "Silero VAD model not cached in %s — download it once with:\n"
                 "  python3 -c \"import torch; torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True)\"",
                 _vad_cache,
             )
