@@ -446,7 +446,7 @@ class RealtimeService:
             st.speculative_user_speech_stopped_at_s = event.speech_stopped_at_s
 
         queue = self.text_prompt_queue
-        if queue and transcript:
+        if queue and (transcript or event.audio_bytes):
             st.response_pending = True
             queue.put(
                 GenerateResponseRequest(
@@ -455,6 +455,7 @@ class RealtimeService:
                     turn_id=event.turn_id,
                     turn_revision=event.turn_revision,
                     speech_stopped_at_s=event.speech_stopped_at_s,
+                    audio_bytes=event.audio_bytes,
                 )
             )
 

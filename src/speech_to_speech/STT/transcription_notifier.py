@@ -62,12 +62,14 @@ class TranscriptionNotifier(BaseHandler[STTOut, Union[STTOut, LLMIn]]):
             turn_id = transcription.turn_id
             turn_revision = transcription.turn_revision
             speech_stopped_at_s = transcription.speech_stopped_at_s
+            audio_bytes = transcription.audio_bytes
         else:
             text = transcription
             language_code = None
             turn_id = None
             turn_revision = None
             speech_stopped_at_s = None
+            audio_bytes = None
 
         transcript = str(text)
         if not transcript:
@@ -80,6 +82,7 @@ class TranscriptionNotifier(BaseHandler[STTOut, Union[STTOut, LLMIn]]):
                         turn_id=turn_id,
                         turn_revision=turn_revision,
                         speech_stopped_at_s=speech_stopped_at_s,
+                        audio_bytes=audio_bytes,
                     )
                 )
             if self.should_listen is not None:
@@ -98,6 +101,7 @@ class TranscriptionNotifier(BaseHandler[STTOut, Union[STTOut, LLMIn]]):
                             turn_id=turn_id,
                             turn_revision=turn_revision,
                             speech_stopped_at_s=speech_stopped_at_s,
+                            audio_bytes=audio_bytes,
                         )
                     )
                 if self.should_listen is not None:
@@ -118,6 +122,7 @@ class TranscriptionNotifier(BaseHandler[STTOut, Union[STTOut, LLMIn]]):
                     turn_id=turn_id,
                     turn_revision=turn_revision,
                     speech_stopped_at_s=speech_stopped_at_s,
+                    audio_bytes=audio_bytes,
                 )
             )
 

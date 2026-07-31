@@ -68,6 +68,7 @@ class Transcription(PipelineMessage):
     turn_id: str | None = None
     turn_revision: int | None = None
     speech_stopped_at_s: float | None = None
+    audio_bytes: Optional[bytes] = None
 
 
 # ── LLM → LMOutputProcessor ──────────────────────────────────────────
@@ -161,6 +162,7 @@ class GenerateResponseRequest(PipelineMessage):
     turn_id: str | None = None
     turn_revision: int | None = None
     speech_stopped_at_s: float | None = None
+    audio_bytes: Optional[bytes] = None
 
 
 # ── Binary sentinels (audio/output queue) ─────────────────────────────

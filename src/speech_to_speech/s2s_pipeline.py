@@ -1093,9 +1093,23 @@ def get_stt_handler(
                 setup_kwargs=setup_kwargs,
             )
         )
+    elif module_kwargs.stt == "native-llm":
+        from speech_to_speech.STT.native_llm_stt_handler import NativeLLMSTTHandler
+
+        if module_kwargs.llm_backend != "chat-completions":
+            raise ValueError("--stt native-llm requires --llm_backend chat-completions")
+
+        return with_speculative_turns(
+            NativeLLMSTTHandler(
+                stop_event,
+                queue_in=spoken_prompt_queue,
+                queue_out=text_prompt_queue,
+                setup_kwargs=vars(faster_whisper_stt_handler_kwargs),
+            )
+        )
     else:
         raise ValueError(
-            "The STT should be either whisper, whisper-mlx, mlx-audio-whisper, faster-whisper, parakeet-tdt, or paraformer."
+            "The STT should be either whisper, whisper-mlx, mlx-audio-whisper, faster-whisper, parakeet-tdt, paraformer, or native-llm."
         )
 
 
