@@ -655,6 +655,11 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
 
         optional_kwargs = self._build_optional_kwargs(req_tools, req_tool_choice)
 
+        # Carry raw audio bytes for native-LLM STT (Chat Completions input_audio).
+        pending_audio = getattr(request, "audio_bytes", None)
+        if pending_audio is not None:
+            self._pending_audio = pending_audio
+
         # CancelScope.is_stale(gen) is checked when the stream iterator advances; a
         # blocked read inside httpx cannot be aborted by cancel_scope.cancel() from
         # the websocket router. Mitigations: request_timeout_s / ReadTimeout.

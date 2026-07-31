@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import time
@@ -111,7 +112,7 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
         """Return a generate fn that calls Chat Completions for compaction."""
         client = self.client
         model_name = self.model_name
-        timeout = self.request_timeout
+        timeout = self.request_timeout_s * 3
         extra_body = self._extra_body
 
         def generate(system: str, user: str) -> str:
@@ -179,7 +180,35 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
     # ── base hooks ──────────────────────────────────────────────────────────--
 
     def _serialize(self, active_chat: Chat) -> list[dict[str, Any]]:
-        return self._chat_messages(active_chat)
+        messages = self._chat_messages(active_chat)
+        pending_audio = getattr(self, "_pending_audio", None)
+        self._pending_audio = None
+        if pending_audio is None:
+            return messages
+
+        try:
+            encoded = base64.b64encode(pending_audio).decode()
+        except Exception:
+            return messages
+
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                content = msg.get("content")
+                if isinstance(content, str):
+                    msg["content"] = [{"type": "text", "text": content}]
+                elif not isinstance(content, list):
+                    msg["content"] = []
+                else:
+                    msg["content"] = list(content)
+
+                audio_part: dict[str, Any] = {
+                    "type": "input_audio",
+                    "input_audio": {"data": encoded, "format": "wav"},
+                }
+                msg["content"].insert(len(msg["content"]) - 1 if msg["content"] else 0, audio_part)
+                break
+
+        return messages
 
     def _build_optional_kwargs(self, req_tools: Any, req_tool_choice: Any) -> dict[str, Any]:
         optional_kwargs: dict[str, Any] = {}

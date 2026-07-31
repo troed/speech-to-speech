@@ -5,6 +5,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 from copy import copy, deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -71,6 +72,7 @@ from speech_to_speech.STT.transcription_notifier import TranscriptionNotifier
 from speech_to_speech.utils.thread_manager import ThreadManager
 from speech_to_speech.VAD.vad_handler import VADHandler
 
+
 # Cache-only NLTK resource check (no network).
 def _ensure_nltk_resource(resource_id: str) -> None:
     _log = logging.getLogger(__name__)
@@ -99,6 +101,64 @@ os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 console = Console()
 logger = logging.getLogger(__name__)
 logging.getLogger("numba").setLevel(logging.WARNING)  # quiet down numba logs
+
+_shared_stt_model: Any = None
+_shared_tts_model: Any = None
+_shared_tts_lock: Optional[threading.Lock] = None
+_shared_vad_model: Any = None
+_shared_models_initialized: bool = False
+
+
+def _ensure_model_singletons(
+    faster_whisper_kwargs: Any,
+    qwen3_tts_kwargs: Any,
+) -> dict[str, Any]:
+    global _shared_stt_model, _shared_tts_model, _shared_tts_lock, _shared_vad_model, _shared_models_initialized
+    if _shared_models_initialized:
+        return {
+            "stt_model": _shared_stt_model,
+            "tts_model": _shared_tts_model,
+            "tts_lock": _shared_tts_lock,
+            "vad_model": _shared_vad_model,
+        }
+
+    from faster_whisper import WhisperModel
+
+    stt_kw = faster_whisper_kwargs
+    _shared_stt_model = WhisperModel(
+        getattr(stt_kw, "model_name", "tiny.en"),
+        device=getattr(stt_kw, "device", "auto"),
+        compute_type=getattr(stt_kw, "compute_type", "auto"),
+    )
+
+    tt_kw = qwen3_tts_kwargs
+    if platform != "darwin":
+        from faster_qwen3_tts import FasterQwen3TTS
+
+        _shared_tts_lock = threading.Lock()
+        _shared_tts_model = FasterQwen3TTS.from_pretrained(
+            getattr(tt_kw, "model_name", "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"),
+            device=getattr(tt_kw, "device", "cuda"),
+            dtype=getattr(tt_kw, "dtype", "auto"),
+            attn_implementation=getattr(tt_kw, "attn_implementation", "eager"),
+            backend=getattr(tt_kw, "backend", "ggml"),
+            quant=getattr(tt_kw, "quant", None),
+        )
+        _shared_tts_model.warmup(prefill_len=100)
+
+    _shared_vad_model, _ = torch.hub.load(
+        "snakers4/silero-vad", "silero_vad", trust_repo=True, skip_validation=True
+    )
+
+    _shared_models_initialized = True
+    logger.info("Model singletons loaded: STT, TTS (with lock), VAD")
+
+    return {
+        "stt_model": _shared_stt_model,
+        "tts_model": _shared_tts_model,
+        "tts_lock": _shared_tts_lock,
+        "vad_model": _shared_vad_model,
+    }
 
 
 @dataclass
@@ -568,6 +628,7 @@ def _build_realtime_pipeline_unit(
     qwen3_tts_handler_kwargs: Qwen3TTSHandlerArguments,
     wake_word_handler_kwargs: WakeWordHandlerArguments | None = None,
     mcp_client_manager: Any = None,
+    shared_models: dict[str, Any] = {},
 ) -> "PipelineUnit":
     """Build one isolated realtime pipeline (own queues, events, service, handlers).
 
@@ -605,9 +666,14 @@ def _build_realtime_pipeline_unit(
     lm_response_queue: Queue[LMOutItem] = Queue()
     lm_processed_queue: Queue[TTSInItem] = Queue()
     text_output_queue: Queue[TextEventItem] = Queue()
+    echo_reference_queue: Queue[bytes] = Queue()
+    echo_filter = EchoFilter()
 
     vars(vad_kw)["text_output_queue"] = text_output_queue
     vars(vad_kw)["speculative_turns"] = speculative_turns
+    vars(vad_kw)["response_playing"] = response_playing
+    vars(vad_kw)["echo_reference_queue"] = echo_reference_queue
+    vars(vad_kw)["cancel_scope"] = cancel_scope
     for kw in (
         lm_kw,
         responses_api_kw,
@@ -620,16 +686,27 @@ def _build_realtime_pipeline_unit(
         vars(kw)["cancel_scope"] = cancel_scope
         vars(kw)["speculative_turns"] = speculative_turns
 
+    if shared_models.get("stt_model"):
+        vars(faster_whisper_kw)["_shared_stt_model"] = shared_models["stt_model"]
+    if shared_models.get("tts_model"):
+        vars(qwen3_tts_kw)["_shared_tts_model"] = shared_models["tts_model"]
+        vars(qwen3_tts_kw)["_shared_tts_lock"] = shared_models["tts_lock"]
+    if shared_models.get("vad_model"):
+        vars(vad_kw)["_shared_vad_model"] = shared_models["vad_model"]
+
     if module_kwargs.llm_backend in ("responses-api", "chat-completions"):
         chat_size = vars(responses_api_kw).get("chat_size", 10)
+        init_instructions = vars(responses_api_kw).get("init_chat_prompt", "")
     else:
         chat_size = vars(lm_kw).get("chat_size", 10)
+        init_instructions = vars(lm_kw).get("init_chat_prompt", "")
 
     service = RealtimeService(
         text_prompt_queue=text_prompt_queue,
         should_listen=should_listen,
         chat_size=chat_size,
         speculative_turns=speculative_turns,
+        init_instructions=init_instructions,
     )
 
     if module_kwargs.enable_live_transcription:
@@ -650,6 +727,7 @@ def _build_realtime_pipeline_unit(
         transcription_notifier_setup={
             "text_output_queue": text_output_queue,
             "should_listen": should_listen,
+            "echo_filter": echo_filter,
         },
         module_kwargs=module_kwargs,
         vad_handler_kwargs=vad_kw,
@@ -668,6 +746,8 @@ def _build_realtime_pipeline_unit(
         speculative_turns=speculative_turns,
         wake_word_handler_kwargs=wake_word_handler_kwargs,
         response_done_event=response_done_event,
+        echo_filter=echo_filter,
+        mcp_client_manager=mcp_client_manager,
     )
     for h in handlers:
         h.pipeline_index = index
@@ -683,6 +763,7 @@ def _build_realtime_pipeline_unit(
         text_output_queue=text_output_queue,
         text_prompt_queue=text_prompt_queue,
         handlers=handlers,
+        echo_reference_queue=echo_reference_queue,
     )
 
 
@@ -773,6 +854,11 @@ def build_pipeline(
     elif module_kwargs.mode == "realtime":
         from speech_to_speech.api.openai_realtime.server import RealtimeServer
 
+        shared_models = _ensure_model_singletons(
+            faster_whisper_stt_handler_kwargs,
+            qwen3_tts_handler_kwargs,
+        )
+
         pool_size = max(1, module_kwargs.num_pipelines)
         pool = [
             _build_realtime_pipeline_unit(
@@ -794,6 +880,7 @@ def build_pipeline(
                 qwen3_tts_handler_kwargs=qwen3_tts_handler_kwargs,
                 wake_word_handler_kwargs=wake_word_handler_kwargs,
                 mcp_client_manager=mcp_client_manager,
+                shared_models=shared_models,
             )
             for i in range(pool_size)
         ]
@@ -1006,9 +1093,23 @@ def get_stt_handler(
                 setup_kwargs=setup_kwargs,
             )
         )
+    elif module_kwargs.stt == "native-llm":
+        from speech_to_speech.STT.native_llm_stt_handler import NativeLLMSTTHandler
+
+        if module_kwargs.llm_backend != "chat-completions":
+            raise ValueError("--stt native-llm requires --llm_backend chat-completions")
+
+        return with_speculative_turns(
+            NativeLLMSTTHandler(
+                stop_event,
+                queue_in=spoken_prompt_queue,
+                queue_out=text_prompt_queue,
+                setup_kwargs=vars(faster_whisper_stt_handler_kwargs),
+            )
+        )
     else:
         raise ValueError(
-            "The STT should be either whisper, whisper-mlx, mlx-audio-whisper, faster-whisper, parakeet-tdt, or paraformer."
+            "The STT should be either whisper, whisper-mlx, mlx-audio-whisper, faster-whisper, parakeet-tdt, paraformer, or native-llm."
         )
 
 

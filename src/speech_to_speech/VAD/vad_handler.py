@@ -57,14 +57,15 @@ class _PendingShortSegment:
 _SHORT_SEGMENT_MIN_FRAGMENT_MS = 100
 
 
-# Optional import for audio enhancement
+# Optional import for audio enhancement (DeepFilterNet).
+# DeepFilterNet requires torchaudio.backend which was removed in torchaudio >= 2.1
+# and also requires numpy<2 which conflicts with Pocket TTS.
 try:
     from df.enhance import enhance, init_df
 
     HAS_DF = True
-except (ImportError, ModuleNotFoundError) as e:
+except Exception:
     HAS_DF = False
-    logger.warning(f"DeepFilterNet not available for audio enhancement: {e}")
 
 
 class VADHandler(BaseHandler[VADIn, VADOut]):
@@ -99,6 +100,7 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         wake_chime_bytes: bytes | None = None,
         chime_output_queue: Queue | None = None,
         echo_reference_queue: Queue | None = None,
+        _shared_vad_model: Any = None,
     ) -> None:
         self.should_listen = should_listen
         self.sample_rate = sample_rate
@@ -118,25 +120,29 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         self.short_segment_merge_ms = max(0, short_segment_merge_ms)
         self._last_turn_detection: dict | None = None
 
-        # Load cached VAD model (no network — warn and use default if missing).
-        _vad_cache = torch.hub.get_dir()
-        _vad_cached = (
-            any(d.startswith("snakers4_silero-vad") for d in os.listdir(_vad_cache))
-            if os.path.isdir(_vad_cache)
-            else False
-        )
-        if not _vad_cached:
-            logger.warning(
-                "Silero VAD model not cached in %s — download it once with:\n"
-                "  python3 -c \"import torch; torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True)\"",
-                _vad_cache,
+        if _shared_vad_model is not None:
+            self.model = _shared_vad_model
+            logger.info("VADHandler using shared VAD model")
+        else:
+            # Load cached VAD model (no network — warn and use default if missing).
+            _vad_cache = torch.hub.get_dir()
+            _vad_cached = (
+                any(d.startswith("snakers4_silero-vad") for d in os.listdir(_vad_cache))
+                if os.path.isdir(_vad_cache)
+                else False
             )
-        self.model, _ = torch.hub.load(
-            "snakers4/silero-vad",
-            "silero_vad",
-            trust_repo=True,
-            skip_validation=True,
-        )
+            if not _vad_cached:
+                logger.warning(
+                    "Silero VAD model not cached in %s — download it once with:\n"
+                    "  python3 -c \"import torch; torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True)\"",
+                    _vad_cache,
+                )
+            self.model, _ = torch.hub.load(
+                "snakers4/silero-vad",
+                "silero_vad",
+                trust_repo=True,
+                skip_validation=True,
+            )
         self.iterator = VADIterator(
             self.model,
             threshold=thresh,
@@ -595,6 +601,7 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         if self._interrupt_audio_buffer:
             self._interrupt_audio_buffer.clear()
         self._interrupt_speech_counter = 0
+        self._interrupt_triggered = False
 
         # Normal listening mode
         self._log_chunks += 1
@@ -697,7 +704,6 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         for buffered_chunk in self._interrupt_audio_buffer:
             _ = self.iterator(buffered_chunk)
         self._interrupt_audio_buffer.clear()
-        self._interrupt_triggered = False
 
         # 6. Re-enable listening so VAD yields from subsequent chunks
         self.should_listen.set()

@@ -17,6 +17,7 @@ from openai.types.realtime import (
     OutputAudioBufferClearEvent,
     RealtimeError,
     RealtimeErrorEvent,
+    RealtimeSessionCreateRequest,
     ResponseAudioDeltaEvent,
     ResponseAudioDoneEvent,
     ResponseAudioTranscriptDoneEvent,
@@ -202,11 +203,13 @@ class RealtimeService:
         should_listen: ThreadingEvent | None = None,
         chat_size: int = 10,
         speculative_turns: SpeculativeTurnTracker | None = None,
+        init_instructions: str = "",
     ) -> None:
         self.text_prompt_queue = text_prompt_queue
         self.should_listen = should_listen
         self._chat_size = chat_size
         self.speculative_turns = speculative_turns
+        self._init_instructions = init_instructions
         self._conns: dict[str, ConnState] = {}
         self.total_usage = GlobalUsageMetrics()
 
@@ -230,7 +233,10 @@ class RealtimeService:
         """Register a new connection and return its session_id."""
         if self.speculative_turns:
             self.speculative_turns.reset()
-        state = ConnState(runtime_config=RuntimeConfig(chat=Chat(self._chat_size)))
+        session_request = RealtimeSessionCreateRequest(type="realtime")
+        if self._init_instructions:
+            session_request.instructions = self._init_instructions
+        state = ConnState(runtime_config=RuntimeConfig(chat=Chat(self._chat_size), session=session_request))
         self._conns[state.session_id] = state
         self.total_usage.connections += 1
         return state.session_id
@@ -440,7 +446,7 @@ class RealtimeService:
             st.speculative_user_speech_stopped_at_s = event.speech_stopped_at_s
 
         queue = self.text_prompt_queue
-        if queue and transcript:
+        if queue and (transcript or event.audio_bytes):
             st.response_pending = True
             queue.put(
                 GenerateResponseRequest(
@@ -449,6 +455,7 @@ class RealtimeService:
                     turn_id=event.turn_id,
                     turn_revision=event.turn_revision,
                     speech_stopped_at_s=event.speech_stopped_at_s,
+                    audio_bytes=event.audio_bytes,
                 )
             )
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 speech-to-speech-client \
-        --host 192.168.0.6 \
+        --host 192.168.0.2 \
         --port 8766 \
         --wake-word-model computer.onnx \
         --wake-chime ready.wav \

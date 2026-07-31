@@ -11,6 +11,7 @@ import logging
 import math
 import re
 import tempfile
+import threading
 import unicodedata
 from collections.abc import Callable
 from pathlib import Path
@@ -106,6 +107,7 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
         xvec_only: bool = False,
         parity_mode: bool = False,
         non_streaming_mode: bool | None = True,
+        quant: Optional[str] = None,
         mlx_quantization: Optional[str] = None,
         streaming_chunk_size: int | None = None,
         max_new_tokens: int = DEFAULT_QWEN3_TTS_MAX_NEW_TOKENS,
@@ -113,6 +115,8 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
         gen_kwargs: dict[str, Any] | None = None,
         cancel_scope: CancelScope | None = None,
         speculative_turns: SpeculativeTurnTracker | None = None,
+        _shared_tts_model: Any = None,
+        _shared_tts_lock: Optional[threading.Lock] = None,
     ) -> None:
         self.cancel_scope = cancel_scope
         self.speculative_turns = speculative_turns
@@ -127,6 +131,7 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
         self.parity_mode = parity_mode
         self.non_streaming_mode = non_streaming_mode
         self.faster_backend = self._normalize_faster_backend(backend)
+        self.quant = quant
         self.mlx_quantization = self._normalize_mlx_quantization(mlx_quantization)
         self.max_new_tokens = max_new_tokens
         self.blocksize = blocksize
@@ -134,6 +139,20 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
         self.gen_kwargs = gen_kwargs or {}
         self._mlx_ref_audio_cache: dict[str, Any] = {}
         self._mlx_temp_ref_audio_files: set[str] = set()
+
+        if _shared_tts_model is not None:
+            self.model = _shared_tts_model
+            self._model_lock = _shared_tts_lock
+            self._model_loaded_externally = True
+            self.backend = "faster_qwen3_tts"
+            self.streaming_chunk_size = self._resolve_streaming_chunk_size(streaming_chunk_size)
+            self.faster_backend = self._normalize_faster_backend(backend)
+            self.model_name = model_name
+            self.device = device
+            logger.info("Qwen3TTSHandler using shared TTS model")
+            self._initial_speaker = self.speaker
+            self._initial_ref_audio = self.ref_audio
+            return
 
         self.backend = "mlx" if platform == "darwin" else "faster_qwen3_tts"
         self.streaming_chunk_size = self._resolve_streaming_chunk_size(streaming_chunk_size)
@@ -168,6 +187,7 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
                 dtype=dtype,
                 attn_implementation=attn_implementation,
                 backend=self.faster_backend,
+                quant=self.quant,
             )
 
         logger.info(
@@ -182,7 +202,7 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
 
         self.warmup()
 
-    def _setup_faster(self, model_name: str, dtype: Any, attn_implementation: str, backend: str) -> None:
+    def _setup_faster(self, model_name: str, dtype: Any, attn_implementation: str, backend: str, quant: Optional[str] = None) -> None:
         try:
             import torch
         except ImportError as e:
@@ -209,6 +229,7 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
             dtype=self.dtype,
             attn_implementation=attn_implementation,
             backend=backend,
+            quant=quant,
         )
         logger.info("Qwen3-TTS model loaded")
 
@@ -587,7 +608,7 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
         sr = getattr(item, "sample_rate", None) or PIPELINE_SR
         return audio_chunk, sr
 
-    def _stream(self, gen: Any, label: str) -> Iterator[bytes | np.ndarray]:
+    def _stream(self, gen: Any, label: str, lock: Optional[threading.Lock] = None) -> Iterator[bytes | np.ndarray]:
         """Common streaming loop: log TTFA and RTF, yield int16 chunks."""
         cancel_gen = self.cancel_scope.generation if self.cancel_scope else None
         start = perf_counter()
@@ -596,52 +617,59 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
         found_speech = False
         leftover = np.array([], dtype=np.int16)
 
-        for item in gen:
-            if cancel_gen is not None and self.cancel_scope is not None and self.cancel_scope.is_stale(cancel_gen):
-                logger.info("TTS generation cancelled (interruption)")
-                return
+        if lock is not None:
+            lock.acquire()
 
-            audio_chunk, sr = self._prepare_audio_chunk(item)
-            if audio_chunk is None or sr is None or audio_chunk.size == 0:
-                continue
+        try:
+            for item in gen:
+                if cancel_gen is not None and self.cancel_scope is not None and self.cancel_scope.is_stale(cancel_gen):
+                    logger.info("TTS generation cancelled (interruption)")
+                    return
 
-            if first_chunk:
-                logger.info(f"Qwen3-TTS TTFA: {perf_counter() - start:.2f}s ({label})")
-                first_chunk = False
-
-            audio_chunk = self._resample_to_pipeline_sr(audio_chunk, sr)
-            audio_chunk = self._to_int16(audio_chunk)
-
-            # Trim the initial silent ramp-up, but keep enough preroll to avoid
-            # shaving soft initial phonemes at the start of the utterance.
-            if not found_speech:
-                threshold = int(32768 * 0.01)
-                above = np.abs(audio_chunk) > threshold
-                if not np.any(above):
+                audio_chunk, sr = self._prepare_audio_chunk(item)
+                if audio_chunk is None or sr is None or audio_chunk.size == 0:
                     continue
-                start_idx = max(0, int(np.argmax(above)) - int(PIPELINE_SR * 0.040))
-                audio_chunk = audio_chunk[start_idx:]
-                found_speech = True
 
-            audio_chunk = np.concatenate([leftover, audio_chunk])
+                if first_chunk:
+                    logger.info(f"Qwen3-TTS TTFA: {perf_counter() - start:.2f}s ({label})")
+                    first_chunk = False
 
-            n = (len(audio_chunk) // self.blocksize) * self.blocksize
-            for i in range(0, n, self.blocksize):
-                yield audio_chunk[i : i + self.blocksize]
-                total_samples += self.blocksize
-            leftover = audio_chunk[n:]
+                audio_chunk = self._resample_to_pipeline_sr(audio_chunk, sr)
+                audio_chunk = self._to_int16(audio_chunk)
 
-        if len(leftover) > 0:
-            chunk = np.pad(leftover, (0, self.blocksize - len(leftover)))
-            yield chunk
-            total_samples += len(leftover)
+                # Trim the initial silent ramp-up, but keep enough preroll to avoid
+                # shaving soft initial phonemes at the start of the utterance.
+                if not found_speech:
+                    threshold = int(32768 * 0.01)
+                    above = np.abs(audio_chunk) > threshold
+                    if not np.any(above):
+                        continue
+                    start_idx = max(0, int(np.argmax(above)) - int(PIPELINE_SR * 0.040))
+                    audio_chunk = audio_chunk[start_idx:]
+                    found_speech = True
 
-        generation_time = perf_counter() - start
-        audio_duration = total_samples / PIPELINE_SR
-        rtf = audio_duration / generation_time if generation_time > 0 else 0
-        logger.info(
-            f"Qwen3-TTS generated {audio_duration:.2f}s audio in {generation_time:.2f}s (RTF: {rtf:.2f}, {label})"
-        )
+                audio_chunk = np.concatenate([leftover, audio_chunk])
+
+                n = (len(audio_chunk) // self.blocksize) * self.blocksize
+                for i in range(0, n, self.blocksize):
+                    yield audio_chunk[i : i + self.blocksize]
+                    total_samples += self.blocksize
+                leftover = audio_chunk[n:]
+
+            if len(leftover) > 0:
+                chunk = np.pad(leftover, (0, self.blocksize - len(leftover)))
+                yield chunk
+                total_samples += len(leftover)
+
+            generation_time = perf_counter() - start
+            audio_duration = total_samples / PIPELINE_SR
+            rtf = audio_duration / generation_time if generation_time > 0 else 0
+            logger.info(
+                f"Qwen3-TTS generated {audio_duration:.2f}s audio in {generation_time:.2f}s (RTF: {rtf:.2f}, {label})"
+            )
+        finally:
+            if lock is not None:
+                lock.release()
 
     def _coalesce_pending_tts_input(self, current_input: TTSInput) -> tuple[str, Optional[str], bool]:
         """Combine already-queued text chunks before the next TTS synthesis call."""
@@ -812,6 +840,7 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
                 non_streaming_mode=self.non_streaming_mode,
             ),
             label="voice_clone_parity" if self.parity_mode else "voice_clone",
+            lock=getattr(self, "_model_lock", None),
         )
 
     def _process_custom_voice(self, text: str) -> Iterator[bytes | np.ndarray]:
@@ -846,6 +875,7 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
                 non_streaming_mode=self.non_streaming_mode,
             ),
             label="custom_voice",
+            lock=getattr(self, "_model_lock", None),
         )
 
     def _process_voice_design(self, text: str) -> Iterator[bytes | np.ndarray]:
@@ -871,6 +901,7 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
                 non_streaming_mode=self.non_streaming_mode,
             ),
             label="voice_design",
+            lock=getattr(self, "_model_lock", None),
         )
 
     def on_session_end(self) -> None:
@@ -880,7 +911,8 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
 
     def cleanup(self) -> None:
         try:
-            del self.model
+            if not getattr(self, "_model_loaded_externally", False):
+                del self.model
             for path in list(getattr(self, "_mlx_temp_ref_audio_files", set())):
                 try:
                     Path(path).unlink(missing_ok=True)
