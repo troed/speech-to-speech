@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import logging
 import time
+import wave
 from collections.abc import Iterator
 from typing import Any, cast
 
@@ -39,6 +41,17 @@ from speech_to_speech.LLM.compaction_prompt import CompactGenerateFn
 from speech_to_speech.utils.utils import _generate_id
 
 logger = logging.getLogger(__name__)
+
+
+def _pcm_to_wav(pcm_data: bytes) -> bytes:
+    """Wrap raw 16 kHz mono int16 PCM bytes in a WAV (RIFF) container."""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)  # 16-bit
+        wf.setframerate(16000)
+        wf.writeframes(pcm_data)
+    return buf.getvalue()
 
 
 def _to_chat_tools(req_tools: Any) -> list[ChatCompletionToolParam] | None:
@@ -187,7 +200,8 @@ class ChatCompletionsApiModelHandler(BaseOpenAICompatibleHandler):
             return messages
 
         try:
-            encoded = base64.b64encode(pending_audio).decode()
+            wav_bytes = _pcm_to_wav(pending_audio)
+            encoded = base64.b64encode(wav_bytes).decode()
         except Exception:
             return messages
 

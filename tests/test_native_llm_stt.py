@@ -128,6 +128,43 @@ class TestTranscriptionNotifierAudioBytes:
 
 
 class TestChatCompletionsAudioSerialization:
+    def test_serialize_injects_input_audio_as_wav(self):
+        import base64
+        import io
+        import struct
+        import wave
+        import numpy as np
+
+        from speech_to_speech.LLM.chat import Chat, make_user_message
+        from speech_to_speech.LLM.chat_completions_language_model import ChatCompletionsApiModelHandler
+
+        sr = 16000
+        samples = sr  # 1 second
+        pcm_audio = (
+            (np.sin(2 * np.pi * 440 * np.arange(samples) / sr) * 0.5 * 32767)
+            .astype(np.int16)
+            .tobytes()
+        )
+        handler = object.__new__(ChatCompletionsApiModelHandler)
+        handler._pending_audio = pcm_audio
+
+        chat = Chat(30)
+        chat.add_item(make_user_message("Hello"))
+
+        messages = handler._serialize(chat)
+        content = messages[0]["content"]
+        audio_part = next(p for p in content if p["type"] == "input_audio")
+        data = audio_part["input_audio"]["data"]
+        assert audio_part["input_audio"]["format"] == "wav"
+
+        wav_bytes = base64.b64decode(data)
+        with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+            assert wf.getnchannels() == 1
+            assert wf.getsampwidth() == 2
+            assert wf.getframerate() == 16000
+            frames = wf.readframes(wf.getnframes())
+            assert len(frames) == len(pcm_audio)
+
     def test_serialize_injects_input_audio(self):
         from speech_to_speech.LLM.chat import Chat, make_user_message
         from speech_to_speech.LLM.chat_completions_language_model import ChatCompletionsApiModelHandler
