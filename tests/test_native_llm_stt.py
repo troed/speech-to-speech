@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from speech_to_speech.pipeline.messages import (
     GenerateResponseRequest,
@@ -99,7 +98,6 @@ class TestNativeLLMSTTHandler:
 class TestTranscriptionNotifierAudioBytes:
     def test_passes_audio_bytes_to_event(self):
         from speech_to_speech.STT.transcription_notifier import TranscriptionNotifier
-        from speech_to_speech.pipeline.events import TranscriptionCompletedEvent
 
         notifier = object.__new__(TranscriptionNotifier)
         notifier.setup(text_output_queue=None, runtime_config=None)
@@ -130,6 +128,43 @@ class TestTranscriptionNotifierAudioBytes:
 
 
 class TestChatCompletionsAudioSerialization:
+    def test_serialize_injects_input_audio_as_wav(self):
+        import base64
+        import io
+        import struct
+        import wave
+        import numpy as np
+
+        from speech_to_speech.LLM.chat import Chat, make_user_message
+        from speech_to_speech.LLM.chat_completions_language_model import ChatCompletionsApiModelHandler
+
+        sr = 16000
+        samples = sr  # 1 second
+        pcm_audio = (
+            (np.sin(2 * np.pi * 440 * np.arange(samples) / sr) * 0.5 * 32767)
+            .astype(np.int16)
+            .tobytes()
+        )
+        handler = object.__new__(ChatCompletionsApiModelHandler)
+        handler._pending_audio = pcm_audio
+
+        chat = Chat(30)
+        chat.add_item(make_user_message("Hello"))
+
+        messages = handler._serialize(chat)
+        content = messages[0]["content"]
+        audio_part = next(p for p in content if p["type"] == "input_audio")
+        data = audio_part["input_audio"]["data"]
+        assert audio_part["input_audio"]["format"] == "wav"
+
+        wav_bytes = base64.b64decode(data)
+        with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+            assert wf.getnchannels() == 1
+            assert wf.getsampwidth() == 2
+            assert wf.getframerate() == 16000
+            frames = wf.readframes(wf.getnframes())
+            assert len(frames) == len(pcm_audio)
+
     def test_serialize_injects_input_audio(self):
         from speech_to_speech.LLM.chat import Chat, make_user_message
         from speech_to_speech.LLM.chat_completions_language_model import ChatCompletionsApiModelHandler
@@ -189,6 +224,49 @@ class TestTranscriptionWithAudioBytes:
     def test_transcription_audio_bytes_defaults_to_none(self):
         t = Transcription(text="hello")
         assert t.audio_bytes is None
+
+
+class TestServiceAddsUserMessageForAudioOnly:
+    """When transcript is empty but audio_bytes is present (native-llm STT),
+    _on_transcription_completed must still add a user message to the chat."""
+
+    def test_chat_has_user_message_after_transcription_completed_with_audio_only(self):
+        from speech_to_speech.api.openai_realtime.runtime_config import RealtimeSessionCreateRequest, RuntimeConfig
+        from speech_to_speech.LLM.chat import Chat, make_user_message
+        from speech_to_speech.pipeline.events import TranscriptionCompletedEvent
+
+        session = RealtimeSessionCreateRequest(type="realtime")
+        cfg = RuntimeConfig(chat=Chat(30), session=session)
+
+        audio = b"\x00\x01\x02"
+        event = TranscriptionCompletedEvent(
+            transcript="",
+            audio_bytes=audio,
+            turn_id="t1",
+            turn_revision=0,
+            speech_stopped_at_s=100.0,
+        )
+        transcript = event.transcript or ("[audio]" if event.audio_bytes else "")
+
+        cfg.chat.add_item(make_user_message(transcript))
+
+        messages = cfg.chat.to_transformers_chat()
+        assert len(messages) == 1
+        assert messages[0]["role"] == "user"
+
+    def test_no_audio_no_transcript_skips_user_message(self):
+        from speech_to_speech.pipeline.events import TranscriptionCompletedEvent
+
+        event = TranscriptionCompletedEvent(
+            transcript="",
+            audio_bytes=None,
+            turn_id="t2",
+            turn_revision=0,
+            speech_stopped_at_s=200.0,
+        )
+        transcript = event.transcript
+        audio_bytes = event.audio_bytes
+        assert not (transcript or audio_bytes)
 
 
 class TestGenerateResponseRequestWithAudioBytes:

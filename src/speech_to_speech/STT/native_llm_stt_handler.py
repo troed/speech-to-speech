@@ -25,6 +25,7 @@ class NativeLLMSTTHandler(BaseSTTHandler):
     def setup(
         self,
         _shared_stt_model: Any = None,
+        **_kwargs: Any,
     ) -> None:
         pass
 

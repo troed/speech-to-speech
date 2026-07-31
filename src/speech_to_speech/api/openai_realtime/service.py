@@ -424,7 +424,7 @@ class RealtimeService:
             st.speculative_audio_duration_s = st.input_audio_duration_s
 
         cfg = st.runtime_config
-        transcript = event.transcript
+        transcript = event.transcript or ("[audio]" if event.audio_bytes else "")
         if transcript:
             if same_speculative_turn and st.speculative_user_item_id:
                 replaced = cfg.chat.replace_user_message_text(st.speculative_user_item_id, transcript)
