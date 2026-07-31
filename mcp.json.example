@@ -12,7 +12,7 @@
       },
       "toolOverrides": {
         "GetLiveContext": {
-          "description": "Get the current state of Home Assistant entities (sensors, switches, lights, media players, etc). Call with NO arguments first to discover ALL entities, then use filters to narrow down.",
+          "description": "Get the current state of Home Assistant entities (sensors, switches, lights, media players, etc).\nUSAGE:\n  - Call with NO arguments first to discover ALL available entities and their current states.\n  - Then use the results to make targeted filtered queries.\nFILTERS (all optional, can be combined):\n  name:  Case-insensitive partial match on entity name. Examples: \"car battery level\", \"pool temperature\".\n  domain: Entity type — \"sensor\", \"switch\", \"light\", \"lock\", \"media_player\", \"binary_sensor\", \"automation\", \"cover\", \"climate\".\n  area:  Area or room name — \"Kitchen\", \"Lounge\", \"Bedroom\", etc.",
           "properties": {
             "name": {
               "description": "Entity name to filter by (case-insensitive partial match). Use exact names from discovery results. Examples: \"pool pump\", \"car battery level\", \"Pool heating\", \"KitchenSpkr\"."
