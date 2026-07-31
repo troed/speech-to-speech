@@ -432,6 +432,8 @@ async def websocket_client(
                 clear_live()
                 print(f"ERROR: {parsed.get('error', 'Unknown error')}", flush=True)
             elif kind == "response_done":
+                if response_active:
+                    grace_deadline = time.monotonic() + wake_inactivity_timeout
                 if "input_tokens" in parsed:
                     logger.debug(
                         "Tokens: %d in / %d out",

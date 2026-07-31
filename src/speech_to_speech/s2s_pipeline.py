@@ -673,6 +673,7 @@ def _build_realtime_pipeline_unit(
     vars(vad_kw)["speculative_turns"] = speculative_turns
     vars(vad_kw)["response_playing"] = response_playing
     vars(vad_kw)["echo_reference_queue"] = echo_reference_queue
+    vars(vad_kw)["cancel_scope"] = cancel_scope
     for kw in (
         lm_kw,
         responses_api_kw,

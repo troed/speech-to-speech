@@ -601,6 +601,7 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         if self._interrupt_audio_buffer:
             self._interrupt_audio_buffer.clear()
         self._interrupt_speech_counter = 0
+        self._interrupt_triggered = False
 
         # Normal listening mode
         self._log_chunks += 1
@@ -703,7 +704,6 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         for buffered_chunk in self._interrupt_audio_buffer:
             _ = self.iterator(buffered_chunk)
         self._interrupt_audio_buffer.clear()
-        self._interrupt_triggered = False
 
         # 6. Re-enable listening so VAD yields from subsequent chunks
         self.should_listen.set()
