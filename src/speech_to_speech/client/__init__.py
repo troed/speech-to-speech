@@ -354,8 +354,10 @@ async def websocket_client(
                     continue
 
                 if response_active and time.monotonic() - last_recv_audio > 1.5 and speaker_queue.empty():
-                    grace_deadline = time.monotonic() + wake_inactivity_timeout
-                    logger.info("Response complete, %ss grace period", wake_inactivity_timeout)
+                    if grace_deadline <= time.monotonic():
+                        grace_deadline = time.monotonic() + wake_inactivity_timeout
+                        logger.info("Response complete, %ss grace period", wake_inactivity_timeout)
+                    await asyncio.sleep(0.1)
                     continue
 
                 if not response_active and grace_deadline > 0 and time.monotonic() >= grace_deadline:
@@ -436,8 +438,6 @@ async def websocket_client(
                         parsed.get("input_tokens", 0),
                         parsed.get("output_tokens", 0),
                     )
-                response_active = False
-            elif kind == "response_done":
                 response_active = False
 
     while not stop_event.is_set():

@@ -666,9 +666,13 @@ def _build_realtime_pipeline_unit(
     lm_response_queue: Queue[LMOutItem] = Queue()
     lm_processed_queue: Queue[TTSInItem] = Queue()
     text_output_queue: Queue[TextEventItem] = Queue()
+    echo_reference_queue: Queue[bytes] = Queue()
+    echo_filter = EchoFilter()
 
     vars(vad_kw)["text_output_queue"] = text_output_queue
     vars(vad_kw)["speculative_turns"] = speculative_turns
+    vars(vad_kw)["response_playing"] = response_playing
+    vars(vad_kw)["echo_reference_queue"] = echo_reference_queue
     for kw in (
         lm_kw,
         responses_api_kw,
@@ -691,14 +695,17 @@ def _build_realtime_pipeline_unit(
 
     if module_kwargs.llm_backend in ("responses-api", "chat-completions"):
         chat_size = vars(responses_api_kw).get("chat_size", 10)
+        init_instructions = vars(responses_api_kw).get("init_chat_prompt", "")
     else:
         chat_size = vars(lm_kw).get("chat_size", 10)
+        init_instructions = vars(lm_kw).get("init_chat_prompt", "")
 
     service = RealtimeService(
         text_prompt_queue=text_prompt_queue,
         should_listen=should_listen,
         chat_size=chat_size,
         speculative_turns=speculative_turns,
+        init_instructions=init_instructions,
     )
 
     if module_kwargs.enable_live_transcription:
@@ -719,6 +726,7 @@ def _build_realtime_pipeline_unit(
         transcription_notifier_setup={
             "text_output_queue": text_output_queue,
             "should_listen": should_listen,
+            "echo_filter": echo_filter,
         },
         module_kwargs=module_kwargs,
         vad_handler_kwargs=vad_kw,
@@ -737,6 +745,8 @@ def _build_realtime_pipeline_unit(
         speculative_turns=speculative_turns,
         wake_word_handler_kwargs=wake_word_handler_kwargs,
         response_done_event=response_done_event,
+        echo_filter=echo_filter,
+        mcp_client_manager=mcp_client_manager,
     )
     for h in handlers:
         h.pipeline_index = index
@@ -752,6 +762,7 @@ def _build_realtime_pipeline_unit(
         text_output_queue=text_output_queue,
         text_prompt_queue=text_prompt_queue,
         handlers=handlers,
+        echo_reference_queue=echo_reference_queue,
     )
 
 

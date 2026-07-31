@@ -68,5 +68,6 @@ class PipelineUnit(BaseModel):
     text_output_queue: Queue
     text_prompt_queue: Queue
     handlers: list[Any]
+    echo_reference_queue: Queue = Field(default_factory=Queue)
 
     session: Optional[SessionState] = None

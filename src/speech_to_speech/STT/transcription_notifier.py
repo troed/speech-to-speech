@@ -70,9 +70,46 @@ class TranscriptionNotifier(BaseHandler[STTOut, Union[STTOut, LLMIn]]):
             speech_stopped_at_s = None
 
         transcript = str(text)
-        # Always close the client-visible transcription item. Empty final STT
-        # results should not trigger the LLM, but clients may already have
-        # received partial deltas and still need a completed event.
+        if not transcript:
+            logger.debug("Transcription completed with empty transcript")
+            if self.text_output_queue is not None:
+                self.text_output_queue.put(
+                    TranscriptionCompletedEvent(
+                        transcript="",
+                        language_code=language_code,
+                        turn_id=turn_id,
+                        turn_revision=turn_revision,
+                        speech_stopped_at_s=speech_stopped_at_s,
+                    )
+                )
+            if self.should_listen is not None:
+                self.should_listen.set()
+                logger.debug("Empty transcription completed; listening re-enabled")
+            return
+
+        if self.echo_filter is not None:
+            if self.echo_filter.is_echo(transcript):
+                logger.info("Echo detected, discarding: %s", transcript)
+                if self.text_output_queue is not None:
+                    self.text_output_queue.put(
+                        TranscriptionCompletedEvent(
+                            transcript="",
+                            language_code=language_code,
+                            turn_id=turn_id,
+                            turn_revision=turn_revision,
+                            speech_stopped_at_s=speech_stopped_at_s,
+                        )
+                    )
+                if self.should_listen is not None:
+                    self.should_listen.set()
+                return
+            self.echo_filter.record(transcript)
+
+        if language_code:
+            logger.info("Transcription completed (language=%s): %s", language_code, transcript)
+        else:
+            logger.info("Transcription completed: %s", transcript)
+
         if self.text_output_queue is not None:
             self.text_output_queue.put(
                 TranscriptionCompletedEvent(
@@ -83,26 +120,6 @@ class TranscriptionNotifier(BaseHandler[STTOut, Union[STTOut, LLMIn]]):
                     speech_stopped_at_s=speech_stopped_at_s,
                 )
             )
-
-        if not transcript:
-            logger.debug("Transcription completed with empty transcript")
-            if self.should_listen is not None:
-                self.should_listen.set()
-                logger.debug("Empty transcription completed; listening re-enabled")
-            return
-
-        if language_code:
-            logger.info("Transcription completed (language=%s): %s", language_code, transcript)
-        else:
-            logger.info("Transcription completed: %s", transcript)
-
-        if self.echo_filter is not None:
-            if self.echo_filter.is_echo(transcript):
-                logger.info("Echo detected, discarding: %s", transcript)
-                if self.should_listen is not None:
-                    self.should_listen.set()
-                return
-            self.echo_filter.record(transcript)
 
         if self.runtime_config is not None:
             chat = self.runtime_config.chat

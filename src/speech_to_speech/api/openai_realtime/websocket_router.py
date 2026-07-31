@@ -824,6 +824,11 @@ def create_app(pool: list[PipelineUnit], stop_event: ThreadingEvent) -> FastAPI:
 
                     audio_chunk = _to_audio_bytes(audio_chunk)
 
+                    try:
+                        unit.echo_reference_queue.put_nowait(audio_chunk)
+                    except Exception:
+                        pass
+
                     audio_batch = bytearray(audio_chunk)
                     while len(audio_batch) < MAX_AUDIO_BATCH_BYTES:
                         try:
@@ -850,6 +855,11 @@ def create_app(pool: list[PipelineUnit], stop_event: ThreadingEvent) -> FastAPI:
                                 session.pending_output_item = next_chunk
                             break
                         audio_batch.extend(next_audio)
+
+                        try:
+                            unit.echo_reference_queue.put_nowait(next_audio)
+                        except Exception:
+                            pass
 
                     if not unit.response_playing.is_set():
                         unit.response_playing.set()

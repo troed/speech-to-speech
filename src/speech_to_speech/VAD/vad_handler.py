@@ -57,14 +57,15 @@ class _PendingShortSegment:
 _SHORT_SEGMENT_MIN_FRAGMENT_MS = 100
 
 
-# Optional import for audio enhancement
+# Optional import for audio enhancement (DeepFilterNet).
+# DeepFilterNet requires torchaudio.backend which was removed in torchaudio >= 2.1
+# and also requires numpy<2 which conflicts with Pocket TTS.
 try:
     from df.enhance import enhance, init_df
 
     HAS_DF = True
-except (ImportError, ModuleNotFoundError) as e:
+except Exception:
     HAS_DF = False
-    logger.warning(f"DeepFilterNet not available for audio enhancement: {e}")
 
 
 class VADHandler(BaseHandler[VADIn, VADOut]):
